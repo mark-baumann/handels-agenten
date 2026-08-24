@@ -25,4 +25,8 @@ WORKDIR /home/appuser/app
 
 COPY --from=builder --chown=appuser:appuser /build .
 
-ENTRYPOINT ["tradingagents"]
+EXPOSE 8000
+
+# The CLI remains available with `docker compose run --rm tradingagents tradingagents`.
+# Serve the browser UI by default so a reverse proxy can route a domain to this container.
+CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]

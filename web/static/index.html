@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TradingAgents — Marktanalyse</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header><p class="eyebrow">MULTI-AGENT RESEARCH</p><h1>Trading<span>Agents</span></h1><p class="intro">Erhalte eine strukturierte, KI-gestützte Marktanalyse für dein nächstes Investment.</p></header>
+      <section class="card" aria-labelledby="form-title">
+        <h2 id="form-title">Neue Analyse</h2>
+        <form id="analysis-form">
+          <div class="fields"><label>Börsenkürzel<input id="ticker" name="ticker" value="NVDA" required maxlength="20" autocomplete="off" /><small>z. B. AAPL, 7203.T oder BTC-USD</small></label><label>Stichtag<input id="trade-date" name="trade_date" type="date" required /><small>Keine zukünftigen Daten</small></label><label>Markt<select id="asset-type" name="asset_type"><option value="stock">Aktie / ETF</option><option value="crypto">Krypto</option></select><small>Wähle passend zum Kürzel</small></label></div>
+          <fieldset><legend>Analyse-Teams</legend><div class="checks"><label><input type="checkbox" name="analysts" value="market" checked /> Markt</label><label><input type="checkbox" name="analysts" value="news" checked /> Nachrichten</label><label><input type="checkbox" name="analysts" value="fundamentals" checked /> Fundamentaldaten</label><label><input type="checkbox" name="analysts" value="social" checked /> Stimmung</label></div></fieldset>
+          <button id="submit" type="submit">Analyse starten <span>→</span></button>
+        </form>
+        <p class="hint">Die Analyse kann je nach Modell und Datenquelle einige Minuten dauern.</p>
+      </section>
+      <section id="status-card" class="card status hidden" aria-live="polite"><div class="status-line"><span id="spinner" class="spinner"></span><div><p class="eyebrow" id="status-label">WARTESCHLANGE</p><h2 id="status-title">Analyse wird vorbereitet</h2></div></div><p id="status-detail">Die Agenten werden gestartet.</p></section>
+      <section id="result-card" class="card result hidden"><p class="eyebrow">ERGEBNIS</p><h2 id="result-title">Handelssignal</h2><div id="signal" class="signal"></div><article id="decision"></article><div id="reports"></div></section>
+      <p class="disclaimer">Keine Anlageberatung. Die Ergebnisse dienen ausschließlich Informationszwecken.</p>
+    </main><script src="/static/app.js"></script>
+  </body>
+</html>

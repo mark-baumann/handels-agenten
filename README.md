@@ -41,7 +41,7 @@
 
 <div align="center">
 
-🚀 [TradingAgents](#tradingagents-framework) | ⚡ [Installation & CLI](#installation-and-cli) | 🎬 [Demo](https://www.youtube.com/watch?v=90gr5lwjIho) | 📦 [Package Usage](#tradingagents-package) | 🤝 [Contributing](#contributing) | 📄 [Citation](#citation)
+🚀 [TradingAgents](#tradingagents-framework) | ⚡ [Installation & CLI](#installation-and-cli) | 🌐 [Web UI](#web-ui) | 🎬 [Demo](https://www.youtube.com/watch?v=90gr5lwjIho) | 📦 [Package Usage](#tradingagents-package) | 🤝 [Contributing](#contributing) | 📄 [Citation](#citation)
 
 </div>
 
@@ -168,6 +168,16 @@ tradingagents          # installed command
 python -m cli.main     # alternative: run directly from source
 ```
 You will see a screen where you can select your desired tickers, analysis date, LLM provider, research depth, and more.
+
+### Web UI
+
+Run the browser interface locally with:
+
+```bash
+uvicorn web.app:app --host 0.0.0.0 --port 8000
+```
+
+Then open `http://localhost:8000`. The Docker Compose `tradingagents` service starts this UI by default and publishes port `8000`, which can be used as the upstream for a reverse proxy. Configure the same LLM environment variables and API keys as for the CLI. Analyses run in the background; keep the tab open to follow progress and read the final decision.
 
 ### Markets and tickers
 
