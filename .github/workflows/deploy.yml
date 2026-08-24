@@ -16,11 +16,17 @@ on:
         type: string
         description: "Service port"
 
+# The reusable deployment workflow logs into GHCR with the caller's token.
+# Explicitly grant package publishing rights to avoid `write_package` failures.
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     uses: mark-baumann/infrastruktur-deployment/.github/workflows/build-deploy.yml@master
     with:
       service_name: ${{ inputs.service_name || 'handels-agenten' }}
-      port: ${{ inputs.port || '8503' }}
-      app_file: "app/streamlit_app.py"
+      port: ${{ inputs.port || '8000' }}
+      app_file: "web/app.py"
     secrets: inherit
