@@ -169,6 +169,22 @@ python -m cli.main     # alternative: run directly from source
 ```
 You will see a screen where you can select your desired tickers, analysis date, LLM provider, research depth, and more.
 
+### Streamlit Web UI
+
+For a browser-based interface, install the optional UI dependency and start the
+app from the repository root:
+
+```bash
+pip install ".[ui]"
+streamlit run streamlit_app.py
+```
+
+The UI lets you select the ticker, date, asset type, analyst teams, provider,
+models, report language, and debate depth. It uses the same `.env` and
+environment-variable API-key configuration as the CLI; API keys are not entered
+or persisted in the browser. Completed reports can be viewed in tabs and the
+final decision can be downloaded as Markdown.
+
 ### Markets and tickers
 
 TradingAgents works with any market Yahoo Finance covers, using the exchange-suffixed ticker. Company identity and the alpha benchmark resolve automatically per market.
