@@ -28,3 +28,6 @@ jobs:
       port: ${{ inputs.port || '8503' }}
       app_file: "app/streamlit_app.py"
     secrets: inherit
+    permissions:
+      packages: write
+      contents: read
