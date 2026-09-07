@@ -4,16 +4,20 @@ Deployed auf trading-agents.markb.de
 """
 
 import datetime
+import os
 import sys
 from pathlib import Path
 
 import streamlit as st
+from dotenv import find_dotenv, set_key
 
 sys.path.insert(0, "/opt/data/trading-agents")
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from tradingagents.llm_clients.openai_client import OPENAI_COMPATIBLE_PROVIDERS
 
 st.set_page_config(
     page_title="Trading Agents",
@@ -177,6 +181,17 @@ def get_model_options(provider, mode):
         return EXTRA_MODELS[provider].get(mode, [])
     return MODEL_OPTIONS.get(provider, {}).get(mode, [])
 
+
+def api_key_required(provider: str) -> str | None:
+    """Return the env var name if `provider` needs a key that isn't already set/optional."""
+    env_var = get_api_key_env(provider)
+    if env_var is None:
+        return None
+    spec = OPENAI_COMPATIBLE_PROVIDERS.get(provider.lower())
+    if spec is not None and spec.key_optional:
+        return None
+    return env_var
+
 # === Populäre Ticker-Datenbank ===
 POPULAR_TICKERS = {
     "🇺🇸 US Tech": [
@@ -309,6 +324,35 @@ with st.sidebar:
     )
     llm_provider = provider_keys[selected_provider_idx]
 
+    env_var = api_key_required(llm_provider)
+    if env_var:
+        has_key = bool(os.environ.get(env_var))
+        with st.expander(f"🔑 {env_var}" + (" ✅ gesetzt" if has_key else " ⚠️ erforderlich"), expanded=not has_key):
+            new_key = st.text_input(
+                f"{env_var} eingeben",
+                value="",
+                type="password",
+                placeholder="Überschreibt den aktuellen Wert" if has_key else "sk-...",
+                key=f"api_key_input_{llm_provider}",
+            )
+            persist = st.checkbox(
+                "Dauerhaft in .env speichern",
+                value=True,
+                key=f"api_key_persist_{llm_provider}",
+                help="Speichert den Key in der .env-Datei des Servers, damit er einen Neustart übersteht.",
+            )
+            if st.button("💾 Speichern", key=f"api_key_save_{llm_provider}"):
+                if new_key:
+                    os.environ[env_var] = new_key
+                    if persist:
+                        env_path = find_dotenv(usecwd=True) or str(Path.cwd() / ".env")
+                        Path(env_path).touch(exist_ok=True)
+                        set_key(env_path, env_var, new_key)
+                    st.success(f"{env_var} gesetzt.")
+                    st.rerun()
+                else:
+                    st.warning("Bitte einen API-Key eingeben.")
+
     deep_options = get_model_options(llm_provider, "deep")
     if deep_options:
         deep_labels = [f"{label} ({model_id})" for label, model_id in deep_options]
@@ -387,6 +431,12 @@ if not start_analysis and st.session_state.analysis_result is None:
             - 🇮🇳 India: `RELIANCE.NS`
             - 🪙 Crypto: `BTC-USD`, `ETH-USD`
             """)
+
+elif start_analysis and (missing_env_var := api_key_required(llm_provider)) and not os.environ.get(missing_env_var):
+    st.error(
+        f"⚠️ {missing_env_var} ist nicht gesetzt. Bitte trage deinen API-Key in der "
+        f"Sidebar unter „🔑 {missing_env_var}“ ein und klicke auf Speichern."
+    )
 
 elif start_analysis:
     # === Run Analysis ===
