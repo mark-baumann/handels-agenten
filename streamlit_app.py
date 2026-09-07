@@ -73,6 +73,7 @@ PROVIDER_LABELS = {
     "groq": "Groq",
     "nvidia": "NVIDIA",
     "bedrock": "AWS Bedrock",
+    "azure": "Azure OpenAI",
 }
 
 # === Erweiterte OpenAI-Modelle ===
@@ -325,6 +326,7 @@ with st.sidebar:
     llm_provider = provider_keys[selected_provider_idx]
 
     env_var = api_key_required(llm_provider)
+    optional_env_var = "OLLAMA_API_KEY" if llm_provider == "ollama" else env_var
     if env_var:
         has_key = bool(os.environ.get(env_var))
         with st.expander(f"🔑 {env_var}" + (" ✅ gesetzt" if has_key else " ⚠️ erforderlich"), expanded=not has_key):
@@ -352,6 +354,45 @@ with st.sidebar:
                     st.rerun()
                 else:
                     st.warning("Bitte einen API-Key eingeben.")
+    elif llm_provider == "bedrock":
+        st.caption("🔐 AWS Bedrock nutzt die AWS Credential Chain (AWS_PROFILE/IAM-Rolle).")
+
+    # Every provider can override its SDK default endpoint. This also makes
+    # Ollama Cloud, gateways, proxies and self-hosted OpenAI-compatible APIs
+    # configurable without editing .env or restarting the app.
+    provider_spec = OPENAI_COMPATIBLE_PROVIDERS.get(llm_provider)
+    default_endpoint = provider_spec.base_url if provider_spec else ""
+    endpoint_help = (
+        "Für Ollama Cloud: https://ollama.com/v1. Lokal: "
+        "http://localhost:11434/v1"
+        if llm_provider == "ollama"
+        else "Leer lassen, um den Standard-Endpunkt des Providers zu verwenden."
+    )
+    backend_url = st.text_input(
+        "🌐 API Endpoint (optional)",
+        value="",
+        placeholder=default_endpoint or "z.B. https://example.com/v1",
+        help=endpoint_help,
+        key=f"backend_url_{llm_provider}",
+    ).strip()
+    if optional_env_var and (provider_spec is None or provider_spec.key_optional):
+        has_optional_key = bool(os.environ.get(optional_env_var))
+        with st.expander(
+            f"🔑 {optional_env_var} (optional)" + (" ✅ gesetzt" if has_optional_key else ""),
+            expanded=False,
+        ):
+            optional_key = st.text_input(
+                f"{optional_env_var} eingeben",
+                value="",
+                type="password",
+                placeholder="Für lokale/keylose Endpoints leer lassen",
+                key=f"optional_api_key_input_{llm_provider}",
+            )
+            if st.button("💾 Optionalen Key setzen", key=f"optional_api_key_save_{llm_provider}"):
+                if optional_key:
+                    os.environ[optional_env_var] = optional_key
+                    st.success(f"{optional_env_var} gesetzt.")
+                    st.rerun()
 
     deep_options = get_model_options(llm_provider, "deep")
     if deep_options:
@@ -444,6 +485,7 @@ elif start_analysis:
     config["llm_provider"] = llm_provider
     config["deep_think_llm"] = deep_think_llm
     config["quick_think_llm"] = quick_think_llm
+    config["backend_url"] = backend_url or None
     config["temperature"] = 0.3  # Sinnvoller Default für Analysen
     config["max_debate_rounds"] = max_debate_rounds
     config["selected_analysts"] = selected_analysts
