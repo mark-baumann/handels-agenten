@@ -388,11 +388,10 @@ with st.sidebar:
                 placeholder="Für lokale/keylose Endpoints leer lassen",
                 key=f"optional_api_key_input_{llm_provider}",
             )
-            if st.button("💾 Optionalen Key setzen", key=f"optional_api_key_save_{llm_provider}"):
-                if optional_key:
-                    os.environ[optional_env_var] = optional_key
-                    st.success(f"{optional_env_var} gesetzt.")
-                    st.rerun()
+            if st.button("💾 Optionalen Key setzen", key=f"optional_api_key_save_{llm_provider}") and optional_key:
+                os.environ[optional_env_var] = optional_key
+                st.success(f"{optional_env_var} gesetzt.")
+                st.rerun()
 
     deep_options = get_model_options(llm_provider, "deep")
     if deep_options:
