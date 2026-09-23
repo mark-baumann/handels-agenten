@@ -161,17 +161,21 @@ MODEL_OPTIONS: ProviderModeOptions = {
     # cli.utils.confirm_ollama_endpoint() right after provider selection.
     # "Custom model ID" lets users pick any model they have pulled via
     # `ollama pull` beyond the three suggested defaults.
+    # Defaults for Ollama Cloud (https://ollama.com/v1) so the shipped dropdown
+    # actually resolves without a `model not found` 404. The endpoint serves
+    # these model ids (no `:latest` tag suffix); local Ollama installs can pull
+    # any `ollama pull <name>` and pick it via "Custom model ID".
     "ollama": {
         "quick": [
-            ("Qwen3:latest (8B)", "qwen3:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
+            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
+            ("GPT-OSS (20B)", "gpt-oss:20b"),
+            ("Qwen3.5 (397B)", "qwen3.5:397b"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("Qwen3:latest (8B)", "qwen3:latest"),
+            ("GLM-5.2 - Latest flagship", "glm-5.2"),
+            ("GLM-5.1 - 745B, 200K ctx", "glm-5.1"),
+            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
             ("Custom model ID", "custom"),
         ],
     },
@@ -186,6 +190,8 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "kimi": _CUSTOM_ONLY,
     "groq": _CUSTOM_ONLY,
     "nvidia": _CUSTOM_ONLY,
+    # Azure deployments use the deployment name configured by the user.
+    "azure": _CUSTOM_ONLY,
     # Bedrock model IDs / cross-region inference profile IDs are user-specified.
     "bedrock": _CUSTOM_ONLY,
 }

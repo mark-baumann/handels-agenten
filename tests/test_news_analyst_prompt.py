@@ -23,3 +23,13 @@ def test_news_prompt_matches_get_news_signature():
     src = inspect.getsource(na)
     assert "get_news(ticker, start_date, end_date)" in src
     assert "get_news(query" not in src
+
+
+@pytest.mark.unit
+def test_news_prompt_asks_to_reconcile_ticker_and_global_signals():
+    """AUG-400: the analyst must reconcile ticker-specific vs. global/macro news
+    (idiosyncratic vs. systematic risk) instead of leaving the weighting implicit,
+    since no downstream agent applies a fixed numeric weight between the two."""
+    src = inspect.getsource(na)
+    assert "conflict" in src
+    assert "dominates" in src

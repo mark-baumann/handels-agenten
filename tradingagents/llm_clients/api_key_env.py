@@ -35,7 +35,8 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "kimi":       "MOONSHOT_API_KEY",
     "groq":       "GROQ_API_KEY",
     "nvidia":     "NVIDIA_API_KEY",
-    # Local runtimes do not authenticate.
+    # Local Ollama does not authenticate. Ollama Cloud's optional token is
+    # handled separately so CLI flows never prompt local users for a key.
     "ollama":     None,
     # Generic OpenAI-compatible endpoint: the client reads this when set (keyed
     # relays), but it is marked key-optional in the provider registry so the CLI
