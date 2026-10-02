@@ -27,6 +27,5 @@ jobs:
     with:
       service_name: ${{ inputs.service_name || 'handels-agenten' }}
       port: ${{ inputs.port || '8503' }}
-      app_file: "app/streamlit_app.py"
+      app_file: "streamlit_app.py"
     secrets: inherit
-
