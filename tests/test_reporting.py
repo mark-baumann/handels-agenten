@@ -1,6 +1,7 @@
 """Report parity: the shared writer produces the report tree for the CLI and the
 programmatic API alike (#1037)."""
 
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -48,3 +49,20 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
     assert out.exists()
     assert out.parent.parent.name == "reports"  # results_dir/reports/AAPL_<stamp>/...
     assert out.parent.name.startswith("AAPL_")
+
+
+@pytest.mark.unit
+def test_streamlit_save_analysis_report_persists_session_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_RESULTS_DIR", str(tmp_path))
+
+    import app.streamlit_app as streamlit_app
+
+    monkeypatch.setitem(streamlit_app.DEFAULT_CONFIG, "results_dir", str(tmp_path))
+
+    out_dir = streamlit_app._save_analysis_report(_state(), "nvda", date(2026, 10, 2))
+
+    assert out_dir.exists()
+    assert out_dir.parent.name == "2026-10-02"
+    assert out_dir.parent.parent.name == "NVDA"
+    assert out_dir.parent.parent.parent.name == "streamlit_sessions"
+    assert (out_dir / "complete_report.md").exists()

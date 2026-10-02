@@ -3,7 +3,8 @@ import os
 import queue
 import threading
 from contextlib import nullcontext
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.model_catalog import get_model_options
+from tradingagents.reporting import write_report_tree
 
 st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide")
 st.title("Handels-Agenten")
@@ -26,9 +28,24 @@ st.caption("Multi-Agent LLM Handelsanalyse")
 # one session's key cannot be used by another concurrent analysis.
 _openai_api_key_lock = threading.Lock()
 
+
 # Provider und Modelle werden über die Umgebung (.env) konfiguriert. Der
 # OpenAI-Schlüssel kann für die laufende Browser-Sitzung auch direkt in der UI
 # hinterlegt werden; er wird dabei nicht in eine Datei geschrieben.
+def _save_analysis_report(final_state: dict, ticker: str, analysis_date: date) -> Path:
+    """Persistiert jeden UI-Lauf in einem datierten Report-Ordner."""
+    ticker_safe = ticker.strip().upper().replace("/", "_")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_dir = (
+        Path(DEFAULT_CONFIG["results_dir"])
+        / "streamlit_sessions"
+        / ticker_safe
+        / str(analysis_date)
+        / stamp
+    )
+    return write_report_tree(final_state, ticker_safe, report_dir).parent
+
+
 llm_provider = DEFAULT_CONFIG["llm_provider"]
 deep_model = DEFAULT_CONFIG["deep_think_llm"]
 quick_model = DEFAULT_CONFIG["quick_think_llm"]
@@ -167,9 +184,12 @@ if st.button("Analyse starten", type="primary", disabled=not ticker.strip() or a
         kind, *payload = result_q.get()
         if kind == "ok":
             decision, final_state = payload
+            report_dir = _save_analysis_report(final_state, ticker, analysis_date)
+            st.session_state["last_report_dir"] = str(report_dir)
             st.success("Analyse abgeschlossen")
             st.subheader("Handelsentscheidung")
             st.write(decision)
+            st.caption(f"Protokoll gespeichert unter: `{report_dir}`")
 
             news_report = final_state.get("news_report", "")
             if news_report:
