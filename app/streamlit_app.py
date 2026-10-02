@@ -15,6 +15,7 @@ from tradingagents.dataflows.google_news import get_global_news_google, get_news
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.api_key_env import get_api_key_env
+from tradingagents.llm_clients.model_catalog import get_model_options
 
 st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide")
 st.title("Handels-Agenten")
@@ -56,10 +57,26 @@ with st.sidebar:
     st.subheader("🤖 LLM (aus .env)")
     st.markdown(
         f"- **Provider:** `{llm_provider}`\n"
-        f"- **Deep-Think:** `{deep_model}`\n"
-        f"- **Quick-Think:** `{quick_model}`\n"
         f"- **Endpoint:** `{endpoint or 'Provider-Standard'}`"
     )
+
+    if llm_provider == "openai":
+        available_models = [model_id for _, model_id in get_model_options("openai", "deep")]
+        default_deep_index = available_models.index(deep_model) if deep_model in available_models else 0
+        default_quick_index = available_models.index(quick_model) if quick_model in available_models else 0
+        st.caption("Modell für die Analyse auswählen (vollständiger OpenAI-Modellkatalog).")
+        deep_model = st.selectbox(
+            "Deep-Think Modell", available_models, index=default_deep_index, key="deep_model_select"
+        )
+        quick_model = st.selectbox(
+            "Quick-Think Modell", available_models, index=default_quick_index, key="quick_model_select"
+        )
+        st.info(
+            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
+            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
+        )
+    else:
+        st.markdown(f"- **Deep-Think:** `{deep_model}`\n- **Quick-Think:** `{quick_model}`")
 
     if llm_provider == "openai":
         st.divider()
