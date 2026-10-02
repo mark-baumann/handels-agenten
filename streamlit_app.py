@@ -14,6 +14,12 @@ sys.path.insert(0, "/opt/data/trading-agents")
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from tradingagents.report_quality import (
+    analyze_report_quality,
+    evaluate_final_decision,
+    resolve_agent_conflict,
+    sanitize_report_text,
+)
 
 st.set_page_config(
     page_title="Trading Agents",
@@ -440,7 +446,20 @@ if st.session_state.analysis_result is not None:
 
     # === Decision Header ===
     decision_str = str(decision)
-    decision_lower = decision_str.lower()
+    sanitized_decision = sanitize_report_text(decision_str)
+    combined_report = "\n".join(
+        value for value in [
+            final_state.get("market_report", ""),
+            final_state.get("sentiment_report", ""),
+            final_state.get("news_report", ""),
+            final_state.get("fundamentals_report", ""),
+            final_state.get("investment_plan", ""),
+            final_state.get("trader_investment_plan", ""),
+            final_state.get("final_trade_decision", ""),
+        ] if value
+    )
+    quality = analyze_report_quality(combined_report or sanitized_decision)
+    decision_lower = sanitized_decision.lower()
 
     if "buy" in decision_lower or "long" in decision_lower:
         action = "🟢 BUY"
@@ -457,6 +476,41 @@ if st.session_state.analysis_result is not None:
     else:
         action = "🟡 HOLD"
         action_class = "decision-hold"
+
+    conflict_resolution = resolve_agent_conflict(combined_report or sanitized_decision)
+    resolved_action = conflict_resolution["final_action"] if quality["issues"] else (
+        "BUY" if "buy" in decision_lower or "long" in decision_lower else
+        "SELL" if "sell" in decision_lower or "short" in decision_lower else
+        "OVERWEIGHT" if "overweight" in decision_lower else
+        "UNDERWEIGHT" if "underweight" in decision_lower else
+        "HOLD"
+    )
+    final_gate = evaluate_final_decision(combined_report or sanitized_decision, resolved_action)
+
+    if quality["issues"]:
+        st.warning("⚠️ Qualitätsprüfung: Der Bericht enthält Konflikte oder fehlende Datenbereiche und wurde automatisch konservativ bewertet.")
+        with st.expander("🔎 Qualitätswarnungen", expanded=True):
+            for issue in quality["issues"]:
+                st.markdown(f"- {issue}")
+
+    status_color = {
+        "approved": "#1fa67a",
+        "rejected": "#d64545",
+        "hold": "#f0ad4e",
+    }.get(final_gate["status"], "#6c757d")
+
+    st.markdown(
+        f"""
+        <div class="metric-card" style="border-left: 5px solid {status_color}; background: rgba(255,255,255,0.02);">
+            <div style="font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 0.08em;">Decision Gate</div>
+            <div style="font-size: 2rem; font-weight: 700; color: {status_color}; margin-top: 0.4rem;">{final_gate['status'].upper()}</div>
+            <div style="margin-top: 0.5rem;"><strong>Endgültige Aktion:</strong> {final_gate['final_action']}</div>
+            <div><strong>Positionsgröße:</strong> {final_gate['position_size']}</div>
+            <div style="margin-top: 0.5rem; color: #dfe6f1;">{final_gate['reason']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -574,10 +628,20 @@ if st.session_state.analysis_result is not None:
     # === Final Decision ===
     st.markdown("## 🎯 Final Trade Decision")
     final_decision = final_state.get("final_trade_decision", "")
-    if final_decision:
-        st.markdown(f'<div class="report-section">{final_decision}</div>', unsafe_allow_html=True)
+
+    if final_gate["status"] == "rejected":
+        st.error("❌ Report rejected by final decision gate")
+        st.markdown(f"**Reason:** {final_gate['reason']}")
+        st.markdown(f"**Forced fallback:** {final_gate['final_action']} | **Position sizing:** {final_gate['position_size']}")
+        if final_decision:
+            st.markdown(f'<div class="report-section">{final_decision}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(decision_str)
     else:
-        st.markdown(decision_str)
+        if final_decision:
+            st.markdown(f'<div class="report-section">{final_decision}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(decision_str)
 
     st.divider()
 
