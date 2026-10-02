@@ -78,19 +78,54 @@ _MINIMAX_MODELS: dict[str, list[ModelOption]] = {
 }
 
 
+# OpenAI model IDs supplied for the UI. This deliberately includes legacy,
+# realtime, audio, image, embedding, moderation, and text-to-speech endpoints so
+# users can select every model available in their account. The TradingAgents
+# workflow itself requires a chat-capable model; the Streamlit UI explains that
+# limitation before an analysis can be started.
+_OPENAI_MODEL_IDS = (
+    "dall-e-2", "omni-moderation-latest", "o3-pro-2025-06-10",
+    "gpt-4o-2024-11-20", "gpt-4o-mini-search-preview",
+    "gpt-4o-mini-search-preview-2025-03-11", "gpt-4o-realtime-preview",
+    "gpt-4-turbo", "gpt-4o-2024-05-13", "o4-mini-2025-04-16",
+    "gpt-4.1-2025-04-14", "o3-2025-04-16", "gpt-4-turbo-2024-04-09",
+    "gpt-4.1-nano-2025-04-14", "gpt-4.1-mini", "gpt-5-nano-2025-08-07",
+    "gpt-4.1-mini-2025-04-14", "gpt-4.1", "o3-mini-2025-01-31",
+    "gpt-4o-search-preview-2025-03-11", "gpt-3.5-turbo-16k",
+    "gpt-4o-search-preview", "o1-mini", "gpt-4.1-nano", "o1-mini-2024-09-12",
+    "gpt-image-1", "gpt-4o-mini-2024-07-18",
+    "gpt-4o-mini-realtime-preview-2024-12-17", "gpt-4o-mini-transcribe",
+    "o3", "o4-mini", "gpt-4o-mini-audio-preview",
+    "gpt-4o-mini-audio-preview-2024-12-17", "gpt-5-chat-latest",
+    "gpt-4o-mini-realtime-preview", "gpt-4o-audio-preview-2024-10-01",
+    "o4-mini-deep-research-2025-06-26", "codex-mini-latest",
+    "gpt-4o-realtime-preview-2024-10-01", "gpt-5-nano", "babbage-002",
+    "tts-1-hd", "gpt-4-turbo-preview", "o3-deep-research", "tts-1-hd-1106",
+    "chatgpt-4o-latest", "gpt-5-mini-2025-08-07", "gpt-4o-mini-tts",
+    "gpt-audio-2025-08-28", "o1-pro-2025-03-19",
+    "gpt-4o-audio-preview-2024-12-17", "o1", "dall-e-3", "davinci-002",
+    "o1-pro", "gpt-4-0613", "gpt-4-0125-preview", "o3-pro",
+    "o3-deep-research-2025-06-26", "o4-mini-deep-research",
+    "gpt-4o-realtime-preview-2024-12-17", "gpt-realtime", "gpt-4o-mini",
+    "whisper-1", "gpt-realtime-2025-08-28", "text-embedding-ada-002",
+    "o3-mini", "gpt-audio", "gpt-4o-realtime-preview-2025-06-03",
+    "gpt-3.5-turbo-1106", "text-embedding-3-small", "gpt-5",
+    "gpt-4o-transcribe", "gpt-3.5-turbo-instruct", "gpt-3.5-turbo-instruct-0914",
+    "text-embedding-3-large", "gpt-4-1106-preview", "tts-1", "tts-1-1106",
+    "gpt-5-codex", "gpt-4o", "gpt-5-mini", "gpt-4o-audio-preview",
+    "gpt-4o-audio-preview-2025-06-03", "gpt-5-2025-08-07", "gpt-4",
+    "gpt-4o-2024-08-06", "o1-2024-12-17", "gpt-3.5-turbo",
+    "gpt-3.5-turbo-0125", "omni-moderation-2024-09-26", "gpt-5.6-sol",
+    # Keep current project defaults selectable as well.
+    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-5.5-pro",
+)
+_OPENAI_MODELS = [(model, model) for model in dict.fromkeys(_OPENAI_MODEL_IDS)]
+
+
 MODEL_OPTIONS: ProviderModeOptions = {
     "openai": {
-        "quick": [
-            ("GPT-5.4 Mini - Fast, strong coding and tool use", "gpt-5.4-mini"),
-            ("GPT-5.4 Nano - Cheapest, high-volume tasks", "gpt-5.4-nano"),
-            ("GPT-5.5 - Latest frontier, 1M context", "gpt-5.5"),
-        ],
-        "deep": [
-            ("GPT-5.5 - Latest frontier, 1M context", "gpt-5.5"),
-            ("GPT-5.4 - Previous-gen frontier, 1M context, cost-effective", "gpt-5.4"),
-            ("GPT-5.2 - Strong reasoning, cost-effective", "gpt-5.2"),
-            ("GPT-5.5 Pro - Most capable, expensive ($30/$180 per 1M tokens)", "gpt-5.5-pro"),
-        ],
+        "quick": _OPENAI_MODELS,
+        "deep": _OPENAI_MODELS,
     },
     "anthropic": {
         "quick": [
@@ -161,17 +196,21 @@ MODEL_OPTIONS: ProviderModeOptions = {
     # cli.utils.confirm_ollama_endpoint() right after provider selection.
     # "Custom model ID" lets users pick any model they have pulled via
     # `ollama pull` beyond the three suggested defaults.
+    # Defaults for Ollama Cloud (https://ollama.com/v1) so the shipped dropdown
+    # actually resolves without a `model not found` 404. The endpoint serves
+    # these model ids (no `:latest` tag suffix); local Ollama installs can pull
+    # any `ollama pull <name>` and pick it via "Custom model ID".
     "ollama": {
         "quick": [
-            ("Qwen3:latest (8B)", "qwen3:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
+            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
+            ("GPT-OSS (20B)", "gpt-oss:20b"),
+            ("Qwen3.5 (397B)", "qwen3.5:397b"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("Qwen3:latest (8B)", "qwen3:latest"),
+            ("GLM-5.2 - Latest flagship", "glm-5.2"),
+            ("GLM-5.1 - 745B, 200K ctx", "glm-5.1"),
+            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
             ("Custom model ID", "custom"),
         ],
     },
@@ -186,6 +225,8 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "kimi": _CUSTOM_ONLY,
     "groq": _CUSTOM_ONLY,
     "nvidia": _CUSTOM_ONLY,
+    # Azure deployments use the deployment name configured by the user.
+    "azure": _CUSTOM_ONLY,
     # Bedrock model IDs / cross-region inference profile IDs are user-specified.
     "bedrock": _CUSTOM_ONLY,
 }

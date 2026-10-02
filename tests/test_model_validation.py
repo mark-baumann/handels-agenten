@@ -53,3 +53,17 @@ class ModelValidationTests(unittest.TestCase):
                     client.get_llm()
 
                 self.assertEqual(caught, [])
+
+    def test_openai_catalog_includes_models_exposed_in_the_web_ui(self):
+        openai_models = set(get_known_models()["openai"])
+
+        self.assertTrue(
+            {
+                "gpt-5.6-sol",
+                "gpt-5-codex",
+                "gpt-4o",
+                "gpt-image-1",
+                "omni-moderation-latest",
+                "text-embedding-3-large",
+            }.issubset(openai_models)
+        )
