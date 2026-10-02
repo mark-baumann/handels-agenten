@@ -2,6 +2,7 @@
 import os
 import queue
 import threading
+from contextlib import nullcontext
 from datetime import date, timedelta
 
 import streamlit as st
@@ -19,9 +20,14 @@ st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide"
 st.title("Handels-Agenten")
 st.caption("Multi-Agent LLM Handelsanalyse")
 
-# LLM-Konfiguration kommt ausschließlich aus der Umgebung (.env) — es gibt
-# keine Eingabefelder für Provider, Modelle oder API-Keys in der UI. Siehe
-# .env.example für die verfügbaren TRADINGAGENTS_* Variablen und Provider-Keys.
+# The OpenAI SDK discovers credentials through the process environment. Since a
+# Streamlit process can serve multiple users, serialize temporary UI-key use so
+# one session's key cannot be used by another concurrent analysis.
+_openai_api_key_lock = threading.Lock()
+
+# Provider und Modelle werden über die Umgebung (.env) konfiguriert. Der
+# OpenAI-Schlüssel kann für die laufende Browser-Sitzung auch direkt in der UI
+# hinterlegt werden; er wird dabei nicht in eine Datei geschrieben.
 llm_provider = DEFAULT_CONFIG["llm_provider"]
 deep_model = DEFAULT_CONFIG["deep_think_llm"]
 quick_model = DEFAULT_CONFIG["quick_think_llm"]
@@ -36,7 +42,7 @@ def api_key_required(provider: str) -> str | None:
 
 
 required_api_env = api_key_required(llm_provider)
-api_key_missing = bool(required_api_env) and not os.environ.get(required_api_env)
+openai_api_key = ""
 
 with st.sidebar:
     st.header("Einstellungen")
@@ -54,8 +60,24 @@ with st.sidebar:
         f"- **Quick-Think:** `{quick_model}`\n"
         f"- **Endpoint:** `{endpoint or 'Provider-Standard'}`"
     )
+
+    if llm_provider == "openai":
+        st.divider()
+        st.subheader("🔑 ChatGPT / OpenAI API")
+        openai_api_key = st.text_input(
+            "OpenAI API-Key",
+            type="password",
+            key="openai_api_key_input",
+            help="Wird nur für diese laufende Server-Sitzung verwendet und nicht gespeichert.",
+        ).strip()
+
+    api_key_available = openai_api_key or os.environ.get(required_api_env or "")
+    api_key_missing = bool(required_api_env) and not api_key_available
     if api_key_missing:
-        st.error(f"API-Key fehlt: `{required_api_env}`. Bitte in der `.env`-Datei setzen.")
+        if llm_provider == "openai":
+            st.error("Bitte gib oben einen OpenAI API-Key ein oder setze `OPENAI_API_KEY` in `.env`.")
+        else:
+            st.error(f"API-Key fehlt: `{required_api_env}`. Bitte in der `.env`-Datei setzen.")
     elif required_api_env:
         st.caption(f"🔑 `{required_api_env}` gesetzt")
 
@@ -93,14 +115,28 @@ if st.button("Analyse starten", type="primary", disabled=not ticker.strip() or a
 
     def run_analysis():
         try:
-            config = DEFAULT_CONFIG.copy()
-            config["llm_provider"] = llm_provider
-            config["backend_url"] = endpoint or None
-            config["deep_think_llm"] = deep_model
-            config["quick_think_llm"] = quick_model
-            ta = TradingAgentsGraph(debug=False, config=config)
-            final_state, decision = ta.propagate(ticker.strip().upper(), str(analysis_date))
-            result_q.put(("ok", decision, final_state))
+            key_lock = _openai_api_key_lock if llm_provider == "openai" else nullcontext()
+            with key_lock:
+                previous_openai_api_key = os.environ.get("OPENAI_API_KEY")
+                try:
+                    if openai_api_key:
+                        # Use the UI key only while this analysis is being created
+                        # and run; never write it to .env or retain it afterwards.
+                        os.environ["OPENAI_API_KEY"] = openai_api_key
+                    config = DEFAULT_CONFIG.copy()
+                    config["llm_provider"] = llm_provider
+                    config["backend_url"] = endpoint or None
+                    config["deep_think_llm"] = deep_model
+                    config["quick_think_llm"] = quick_model
+                    ta = TradingAgentsGraph(debug=False, config=config)
+                    final_state, decision = ta.propagate(ticker.strip().upper(), str(analysis_date))
+                    result_q.put(("ok", decision, final_state))
+                finally:
+                    if openai_api_key:
+                        if previous_openai_api_key is None:
+                            os.environ.pop("OPENAI_API_KEY", None)
+                        else:
+                            os.environ["OPENAI_API_KEY"] = previous_openai_api_key
         except Exception as exc:
             result_q.put(("error", str(exc)))
 
