@@ -169,6 +169,25 @@ python -m cli.main     # alternative: run directly from source
 ```
 You will see a screen where you can select your desired tickers, analysis date, LLM provider, research depth, and more.
 
+### Streamlit Portfolio Dashboard
+
+Launch the web dashboard locally with:
+```bash
+streamlit run app/streamlit_app.py
+```
+
+Add a ticker with its share quantity and optional average purchase price, or update an
+existing holding by adding it again. Holdings can also be removed from the portfolio.
+The dashboard charts each holding's one-year price history indexed to 100, so securities
+with different share prices can be compared without mixing quote currencies. Use
+**Analysieren** beside a holding to run its multi-agent analysis, or open **Berichte** to
+retrieve earlier reports after restarting the app.
+
+Holdings and full report contents are stored in `portfolio.sqlite3` under
+`TRADINGAGENTS_CACHE_DIR` (default: `~/.tradingagents/cache`). Keep that directory on
+persistent storage and include it in backups. Detailed per-analysis report files are
+also written under `TRADINGAGENTS_RESULTS_DIR`.
+
 ### Markets and tickers
 
 TradingAgents works with any market Yahoo Finance covers, using the exchange-suffixed ticker. Company identity and the alpha benchmark resolve automatically per market.

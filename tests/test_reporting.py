@@ -1,7 +1,9 @@
 """Report parity: the shared writer produces the report tree for the CLI and the
 programmatic API alike (#1037)."""
 
+import importlib.util
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +57,10 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
 def test_streamlit_save_analysis_report_persists_session_log(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_RESULTS_DIR", str(tmp_path))
 
-    import app.streamlit_app as streamlit_app
+    app_path = Path(__file__).parents[1] / "app" / "streamlit_app.py"
+    spec = importlib.util.spec_from_file_location("handels_agenten_streamlit_app", app_path)
+    streamlit_app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(streamlit_app)
 
     monkeypatch.setitem(streamlit_app.DEFAULT_CONFIG, "results_dir", str(tmp_path))
 
