@@ -171,7 +171,23 @@ You will see a screen where you can select your desired tickers, analysis date, 
 
 ### Streamlit Portfolio Dashboard
 
-Launch the web dashboard locally with:
+Configure OpenAI on the server before starting the dashboard. Copy `.env.example`
+to `.env` in the project root (do not overwrite an existing `.env`) and set:
+
+```dotenv
+OPENAI_API_KEY=your-openai-api-key
+TRADINGAGENTS_LLM_PROVIDER=openai
+TRADINGAGENTS_DEEP_THINK_LLM=gpt-5.4
+TRADINGAGENTS_QUICK_THINK_LLM=gpt-5.4-mini
+```
+
+The dashboard reads the key on the server; there is no browser key input.
+Exported environment variables take precedence over `.env`. Restart the application
+after changing the file. A missing key disables analysis and displays a setup hint.
+Keep `.env` private; it is excluded from Git and Docker images. Docker Compose
+passes it to the container through `env_file`.
+
+Launch the web dashboard locally from the project root with:
 ```bash
 streamlit run app/streamlit_app.py
 ```
