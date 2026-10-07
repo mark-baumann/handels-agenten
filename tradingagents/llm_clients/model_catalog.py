@@ -231,6 +231,9 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "bedrock": _CUSTOM_ONLY,
 }
 
+# Ollama Cloud serves the same model ids as the Ollama defaults above.
+MODEL_OPTIONS["ollama_cloud"] = MODEL_OPTIONS["ollama"]
+
 
 def get_model_options(provider: str, mode: str) -> list[ModelOption]:
     """Return shared model options for a provider and selection mode."""

@@ -38,6 +38,8 @@ PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     # Local Ollama does not authenticate. Ollama Cloud's optional token is
     # handled separately so CLI flows never prompt local users for a key.
     "ollama":     None,
+    # Ollama Cloud (https://ollama.com) always authenticates with an API key.
+    "ollama_cloud": "OLLAMA_API_KEY",
     # Generic OpenAI-compatible endpoint: the client reads this when set (keyed
     # relays), but it is marked key-optional in the provider registry so the CLI
     # never forces a prompt and keyless local servers still work.

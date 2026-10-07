@@ -226,6 +226,8 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
     "ollama":     ProviderSpec(base_url="http://localhost:11434/v1", base_url_env="OLLAMA_BASE_URL",
                                key_optional=True, placeholder_key="ollama"),
+    # Hosted Ollama Cloud: fixed endpoint, OLLAMA_API_KEY required.
+    "ollama_cloud": ProviderSpec(base_url="https://ollama.com/v1"),
     # Generic endpoint: user supplies base_url; key optional (keyless local).
     "openai_compatible": ProviderSpec(
         require_base_url=True, key_optional=True, chat_class=LocalCompatibleChatOpenAI
