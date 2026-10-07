@@ -153,6 +153,8 @@ For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_pro
 
 For local models, configure Ollama with `llm_provider: "ollama"`. The default endpoint is `http://localhost:11434/v1`; set `OLLAMA_BASE_URL` to point at a remote `ollama-serve`. If that endpoint requires a token (Ollama Cloud or a keyed remote server), set `OLLAMA_API_KEY` in your `.env` — it is optional and local Ollama needs no key. Pull models with `ollama pull <name>`, and pick "Custom model ID" in the CLI for any model not listed by default.
 
+For **Ollama Cloud**, set `TRADINGAGENTS_LLM_PROVIDER=ollama_cloud` and `OLLAMA_API_KEY=<key>` in your `.env` (key from https://ollama.com/settings/keys). The endpoint `https://ollama.com/v1` is used automatically; choose models via `TRADINGAGENTS_DEEP_THINK_LLM` / `TRADINGAGENTS_QUICK_THINK_LLM` (e.g. `gpt-oss:120b`).
+
 For any other OpenAI-compatible server (vLLM, LM Studio, llama.cpp, or a custom relay), use `llm_provider: "openai_compatible"` and set the endpoint via `backend_url` (or `TRADINGAGENTS_LLM_BACKEND_URL`), e.g. `http://localhost:8000/v1` for vLLM or `http://localhost:1234/v1` for LM Studio. The model is whatever your server serves. No key is needed for local servers; set `OPENAI_COMPATIBLE_API_KEY` when the endpoint requires one.
 
 Alternatively, copy `.env.example` to `.env` and fill in your keys:

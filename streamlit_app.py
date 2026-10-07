@@ -69,6 +69,7 @@ PROVIDER_LABELS = {
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax CN",
     "ollama": "Ollama (lokal)",
+    "ollama_cloud": "Ollama Cloud",
     "openai_compatible": "OpenAI-kompatibel",
     "mistral": "Mistral",
     "kimi": "Kimi",
