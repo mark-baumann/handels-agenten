@@ -1,4 +1,5 @@
 """Handels-Agenten — Streamlit Web-UI"""
+import inspect
 import os
 import queue
 import threading
@@ -20,8 +21,156 @@ from tradingagents.portfolio import PortfolioStore, load_portfolio_price_history
 from tradingagents.reporting import write_report_tree  # noqa: E402
 
 st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide")
-st.title("Handels-Agenten")
-st.caption("Dein Portfolio und KI-gestützte Aktienanalysen")
+
+# === Theme & Styling ========================================================
+
+_THEME_LIGHT = {
+    "card_border": "#e3e7ef",
+    "text": "#1b2437",
+    "muted": "#667085",
+    "up": "#059669",
+    "up_soft": "#e7f7f0",
+    "down": "#dc2626",
+    "down_soft": "#fdeaea",
+    "chip_bg": "#f2f4f9",
+}
+
+_THEME_DARK = {
+    "card_border": "#313a4d",
+    "text": "#e7ebf5",
+    "muted": "#98a2b8",
+    "up": "#34d399",
+    "up_soft": "#12362b",
+    "down": "#f87171",
+    "down_soft": "#3d1f22",
+    "chip_bg": "#262d3f",
+}
+
+_CSS = """
+<style>
+    .hero {
+        background: linear-gradient(135deg, #4f46e5 0%, #6d28d9 55%, #2563eb 100%);
+        border-radius: 16px;
+        padding: 22px 26px;
+        margin-bottom: 4px;
+        box-shadow: 0 4px 16px rgba(79, 70, 229, 0.28);
+    }
+    .hero-title {
+        color: #ffffff;
+        font-size: 1.9rem;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+        line-height: 1.15;
+    }
+    .hero-sub {
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 0.95rem;
+        margin-top: 3px;
+    }
+    .chip {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin: 6px 6px 2px 0;
+        background: @@chip_bg@@;
+        color: @@muted@@;
+        border: 1px solid @@card_border@@;
+    }
+    .chip-ok { background: @@up_soft@@; color: @@up@@; border-color: transparent; }
+    .chip-bad { background: @@down_soft@@; color: @@down@@; border-color: transparent; }
+    .sym { font-size: 1.1rem; font-weight: 700; color: @@text@@; }
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        vertical-align: middle;
+        margin-left: 6px;
+    }
+    .badge-up { background: @@up_soft@@; color: @@up@@; }
+    .badge-down { background: @@down_soft@@; color: @@down@@; }
+    .badge-flat { background: @@chip_bg@@; color: @@muted@@; }
+    .stat { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+    .stat-label {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: @@muted@@;
+        font-weight: 600;
+    }
+    .stat-value { font-size: 1.02rem; font-weight: 650; color: @@text@@; }
+    .footer { text-align: center; color: @@muted@@; font-size: 0.78rem; padding: 4px 0 12px; }
+</style>
+"""
+
+
+def _active_theme() -> dict:
+    base = (st.get_option("theme.base") or "light").lower()
+    return _THEME_DARK if base == "dark" else _THEME_LIGHT
+
+
+def _apply_theme_css() -> None:
+    css = _CSS
+    for key, value in _active_theme().items():
+        css = css.replace(f"@@{key}@@", value)
+    st.markdown(css, unsafe_allow_html=True)
+
+
+def _chip(label: str, kind: str = "neutral") -> str:
+    suffix = "" if kind == "neutral" else f" chip-{kind}"
+    return f'<span class="chip{suffix}">{label}</span>'
+
+
+def _hero() -> None:
+    st.markdown(
+        """
+        <div class="hero">
+            <div class="hero-title">📈 Handels-Agenten</div>
+            <div class="hero-sub">Dein Portfolio und KI-gestützte Aktienanalysen</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _return_badge(return_value: float | None) -> str:
+    if return_value is None:
+        return '<span class="badge badge-flat">—</span>'
+    percent = return_value * 100
+    kind = "badge-up" if percent >= 0 else "badge-down"
+    return f'<span class="badge {kind}">{percent:+.2f}%</span>'
+
+
+def _decision_tone(decision: str) -> str:
+    text = decision.lower()
+    if any(word in text for word in ("buy", "long", "overweight")):
+        return "buy"
+    if any(word in text for word in ("sell", "short", "underweight")):
+        return "sell"
+    return "hold"
+
+
+HAS_BORDERED_CONTAINERS = "border" in inspect.signature(st.container).parameters
+
+
+def _box():
+    if HAS_BORDERED_CONTAINERS:
+        return st.container(border=True)
+    return st.container()
+
+
+def _stat(label: str, value: str) -> None:
+    st.markdown(
+        f'<div class="stat"><span class="stat-label">{label}</span>'
+        f'<span class="stat-value">{value}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+_apply_theme_css()
 
 # Provider, model defaults and credentials come from the server environment.
 def _save_analysis_report(final_state: dict, ticker: str, analysis_date: date) -> Path:
@@ -56,14 +205,32 @@ def api_key_required(provider: str) -> str | None:
 
 
 required_api_env = api_key_required(llm_provider)
+api_key_available = os.environ.get(required_api_env or "", "").strip()
+api_key_missing = bool(required_api_env) and not api_key_available
+
+_hero()
+status_chips = (
+    _chip(f"🤖 {llm_provider}")
+    + _chip(f"🧠 {deep_model}")
+    + _chip(f"⚡ {quick_model}")
+)
+if required_api_env:
+    status_chips += (
+        _chip("🔑 API-Key fehlt", "bad")
+        if api_key_missing
+        else _chip("🔑 API-Key gesetzt", "ok")
+    )
+else:
+    status_chips += _chip("🔑 Kein API-Key nötig", "ok")
+st.markdown(status_chips, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Einstellungen")
+    st.markdown("### ⚙️ Einstellungen")
     st.divider()
-    st.subheader("🤖 LLM (aus .env)")
+    st.markdown("#### 🤖 LLM (aus .env)")
     st.markdown(
-        f"- **Provider:** `{llm_provider}`\n"
-        f"- **Endpoint:** `{endpoint or 'Provider-Standard'}`"
+        f"**Provider:** `{llm_provider}`  \n"
+        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
     )
 
     if llm_provider == "openai":
@@ -82,14 +249,20 @@ with st.sidebar:
             "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
         )
     else:
-        st.markdown(f"- **Deep-Think:** `{deep_model}`\n- **Quick-Think:** `{quick_model}`")
+        st.markdown(
+            f"**Deep-Think:** `{deep_model}`  \n**Quick-Think:** `{quick_model}`"
+        )
 
-    api_key_available = os.environ.get(required_api_env or "", "").strip()
-    api_key_missing = bool(required_api_env) and not api_key_available
     if api_key_missing:
-        st.error(f"API-Key fehlt: `{required_api_env}`. Bitte serverseitig in `.env` setzen und die Anwendung neu starten.")
+        st.error(
+            f"API-Key fehlt: `{required_api_env}`. "
+            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
+        )
     elif required_api_env:
-        st.caption(f"🔑 `{required_api_env}` gesetzt")
+        st.success(f"🔑 `{required_api_env}` gesetzt")
+
+    st.divider()
+    st.caption("Konfiguration wird zentral über die Server-`.env` bereitgestellt.")
 
 store = _portfolio_store()
 portfolio_tab, analysis_tab, reports_tab = st.tabs(
@@ -101,6 +274,7 @@ with portfolio_tab:
     st.caption("Bestände und Analysen werden dauerhaft lokal in SQLite gespeichert.")
 
     with st.form("add_holding_form", clear_on_submit=True):
+        st.markdown("**Position hinzufügen**")
         ticker_col, shares_col, cost_col, submit_col = st.columns([2, 1, 1, 1])
         with ticker_col:
             holding_symbol = st.text_input("Ticker", placeholder="z. B. AAPL oder SAP.DE")
@@ -136,9 +310,32 @@ with portfolio_tab:
     if not holdings:
         st.info("Noch keine Positionen. Füge oben ein Wertpapier hinzu.")
     else:
-        st.metric("Positionen", len(holdings))
         with st.spinner("Lade Kursverläufe …"):
             price_history, latest_prices, price_errors = load_portfolio_price_history(holdings)
+
+        valued_symbols = [h["symbol"] for h in holdings if h["symbol"] in latest_prices]
+        total_value = sum(
+            holding["shares"] * latest_prices[holding["symbol"]]
+            for holding in holdings
+            if holding["symbol"] in latest_prices
+        )
+        returns = [
+            latest_prices[holding["symbol"]] / holding["average_cost"] - 1
+            for holding in holdings
+            if holding["symbol"] in latest_prices and holding["average_cost"]
+        ]
+        average_return = sum(returns) / len(returns) if returns else None
+
+        kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+        kpi_col1.metric("Positionen", len(holdings))
+        kpi_col2.metric(
+            "Gesamtwert",
+            f"{total_value:,.2f}" if valued_symbols else "—",
+        )
+        kpi_col3.metric(
+            "Ø Rendite",
+            f"{average_return * 100:+.2f}%" if average_return is not None else "—",
+        )
 
         if not price_history.empty:
             st.markdown("**Kursentwicklung je Position**")
@@ -152,35 +349,54 @@ with portfolio_tab:
             symbol = holding["symbol"]
             latest = latest_prices.get(symbol)
             current_return = (
-                f"{(latest / holding['average_cost'] - 1) * 100:+.2f}%"
+                latest / holding["average_cost"] - 1
                 if latest is not None and holding["average_cost"]
-                else "—"
+                else None
             )
             current_price = f"{latest:,.2f}" if latest is not None else "—"
-            col_symbol, col_shares, col_cost, col_price, col_return, col_action = st.columns(
-                [1.2, 1, 1.2, 1, 1, 1.5]
+            cost_text = (
+                f"{holding['average_cost']:,.2f}" if holding["average_cost"] else "—"
             )
-            col_symbol.write(f"**{symbol}**")
-            col_shares.write(f"{holding['shares']:,.6g} Stk.")
-            col_cost.write(
-                f"Kauf: {holding['average_cost']:,.2f}"
-                if holding["average_cost"]
-                else "Kauf: —"
-            )
-            col_price.write(f"Kurs: {current_price}")
-            col_return.write(current_return)
-            with col_action:
-                if st.button("Analysieren", key=f"analyze_{symbol}", disabled=api_key_missing):
-                    st.session_state["analysis_ticker"] = symbol
-                    st.session_state["run_portfolio_analysis"] = True
-                    st.rerun()
-            remove_col, _ = st.columns([1.5, 8.5])
-            with remove_col:
-                if st.button("Entfernen", key=f"remove_{symbol}"):
-                    store.remove_holding(symbol)
-                    st.rerun()
+
+            with _box():
+                head_col, action_col = st.columns([3.2, 1.0])
+                with head_col:
+                    st.markdown(
+                        f'<span class="sym">{symbol}</span>{_return_badge(current_return)}',
+                        unsafe_allow_html=True,
+                    )
+                    stat_cols = st.columns(3)
+                    with stat_cols[0]:
+                        _stat("Stückzahl", f"{holding['shares']:,.6g}")
+                    with stat_cols[1]:
+                        _stat("Kauf", cost_text)
+                    with stat_cols[2]:
+                        _stat("Kurs", current_price)
+                with action_col:
+                    if st.button(
+                        "🔎 Analysieren",
+                        key=f"analyze_{symbol}",
+                        disabled=api_key_missing,
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        st.session_state["analysis_ticker"] = symbol
+                        st.session_state["run_portfolio_analysis"] = True
+                        st.rerun()
+                    if st.button(
+                        "🗑️ Entfernen",
+                        key=f"remove_{symbol}",
+                        use_container_width=True,
+                    ):
+                        store.remove_holding(symbol)
+                        st.rerun()
 
 with analysis_tab:
+    st.subheader("KI-Analyse starten")
+    st.caption(
+        "Multi-Agenten-Analyse mit Analysten, Research-Debatte, Trader und Risikomanagement."
+    )
+
     holdings = store.list_holdings()
     held_symbols = [holding["symbol"] for holding in holdings]
     default_symbol = st.session_state.get("analysis_ticker", held_symbols[0] if held_symbols else "NVDA")
@@ -241,9 +457,15 @@ with analysis_tab:
                     st.error(f"Analyse abgeschlossen, der Bericht konnte nicht gespeichert werden: {exc}")
                 else:
                     st.success(f"Analyse abgeschlossen und dauerhaft gespeichert (Bericht #{report_id}).")
-                    st.subheader("Handelsentscheidung")
-                    st.write(decision)
-                    st.markdown(report_markdown)
+                    tone = _decision_tone(str(decision))
+                    if tone == "buy":
+                        st.success(f"**Handelsentscheidung**  \n{decision}")
+                    elif tone == "sell":
+                        st.error(f"**Handelsentscheidung**  \n{decision}")
+                    else:
+                        st.info(f"**Handelsentscheidung**  \n{decision}")
+                    with _box():
+                        st.markdown(report_markdown)
             else:
                 st.error(f"Fehler: {payload[0]}")
         else:
@@ -267,5 +489,32 @@ with reports_tab:
         if full_report is None:
             st.error("Der ausgewählte Bericht ist nicht mehr verfügbar.")
         else:
-            st.markdown(f"**Entscheidung:** {full_report['decision']}")
-            st.markdown(full_report["report_markdown"])
+            tone = _decision_tone(full_report["decision"])
+            if tone == "buy":
+                st.success(f"**Entscheidung:** {full_report['decision']}")
+            elif tone == "sell":
+                st.error(f"**Entscheidung:** {full_report['decision']}")
+            else:
+                st.info(f"**Entscheidung:** {full_report['decision']}")
+
+            download_col, _ = st.columns([1, 3])
+            with download_col:
+                st.download_button(
+                    "⬇️ Markdown herunterladen",
+                    full_report["report_markdown"],
+                    file_name=(
+                        f"{full_report['symbol']}_{full_report['analysis_date']}"
+                        "_bericht.md"
+                    ),
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with _box():
+                st.markdown(full_report["report_markdown"])
+
+st.divider()
+st.markdown(
+    '<div class="footer">⚠️ Nur zu Forschungszwecken — keine Anlageberatung. '
+    "Kursdaten: Yahoo Finance.</div>",
+    unsafe_allow_html=True,
+)
