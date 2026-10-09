@@ -44,6 +44,23 @@ def test_string_overrides(monkeypatch):
     assert dc.DEFAULT_CONFIG["output_language"] == "Chinese"
 
 
+@pytest.mark.parametrize("provider", ["ollama", "ollama_cloud"])
+def test_ollama_provider_gets_ollama_default_models(monkeypatch, provider):
+    dc = _reload_with_env(monkeypatch, TRADINGAGENTS_LLM_PROVIDER=provider)
+    assert dc.DEFAULT_CONFIG["deep_think_llm"] == "gpt-oss:120b"
+    assert dc.DEFAULT_CONFIG["quick_think_llm"] == "gpt-oss:20b"
+
+
+def test_ollama_provider_keeps_explicit_models(monkeypatch):
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_LLM_PROVIDER="ollama_cloud",
+        TRADINGAGENTS_DEEP_THINK_LLM="glm-5.2",
+    )
+    assert dc.DEFAULT_CONFIG["deep_think_llm"] == "glm-5.2"
+    assert dc.DEFAULT_CONFIG["quick_think_llm"] == "gpt-oss:20b"
+
+
 def test_int_coercion(monkeypatch):
     dc = _reload_with_env(
         monkeypatch,

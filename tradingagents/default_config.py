@@ -28,6 +28,13 @@ _ENV_OVERRIDES = {
 }
 
 
+# Default models for providers that cannot serve the OpenAI default ids.
+_PROVIDER_DEFAULT_MODELS = {
+    "ollama":       {"deep_think_llm": "gpt-oss:120b", "quick_think_llm": "gpt-oss:20b"},
+    "ollama_cloud": {"deep_think_llm": "gpt-oss:120b", "quick_think_llm": "gpt-oss:20b"},
+}
+
+
 _BOOL_TRUE = ("true", "1", "yes", "on")
 _BOOL_FALSE = ("false", "0", "no", "off")
 
@@ -65,6 +72,15 @@ def _apply_env_overrides(config: dict) -> dict:
             config[key] = _coerce(raw, config.get(key))
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
+    # The built-in model defaults are OpenAI ids that Ollama does not serve, so
+    # switching only the provider would 404 on the first call. Fill in models
+    # the Ollama endpoints do serve unless the user picked their own.
+    provider_models = _PROVIDER_DEFAULT_MODELS.get(str(config.get("llm_provider")).lower())
+    if provider_models:
+        for env_var, key in (("TRADINGAGENTS_DEEP_THINK_LLM", "deep_think_llm"),
+                             ("TRADINGAGENTS_QUICK_THINK_LLM", "quick_think_llm")):
+            if not os.environ.get(env_var):
+                config[key] = provider_models[key]
     return config
 
 
