@@ -40,6 +40,19 @@ def test_rejects_invalid_holding_data(tmp_path, symbol, shares, average_cost):
 
 
 @pytest.mark.unit
+def test_settings_survive_store_reopen(tmp_path):
+    database_path = tmp_path / "portfolio.sqlite3"
+    store = PortfolioStore(database_path)
+    assert store.get_setting("llm_provider") is None
+    assert store.get_setting("llm_provider", "openai") == "openai"
+
+    store.set_setting("llm_provider", "ollama_cloud")
+    store.set_setting("llm_provider", "nvidia")
+
+    assert PortfolioStore(database_path).get_setting("llm_provider") == "nvidia"
+
+
+@pytest.mark.unit
 def test_remove_holding_is_idempotent(tmp_path):
     store = PortfolioStore(tmp_path / "portfolio.sqlite3")
     store.add_holding("AAPL", 1)
