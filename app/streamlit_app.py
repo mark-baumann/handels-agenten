@@ -202,7 +202,6 @@ def _portfolio_store() -> PortfolioStore:
 # Credentials and endpoints come from the server environment; provider and
 # models are chosen in the sidebar and persisted next to the portfolio data.
 _LLM_SETTINGS_PATH = Path(DEFAULT_CONFIG["data_cache_dir"]) / "llm_settings.json"
-_CUSTOM_MODEL = "Eigene Modell-ID …"
 
 
 def api_key_required(provider: str) -> str | None:
@@ -213,22 +212,15 @@ def api_key_required(provider: str) -> str | None:
 
 
 def _model_select(label: str, provider: str, mode: str, settings: dict) -> str:
-    """Modellauswahl aus dem Katalog des Providers oder als freie Modell-ID."""
+    """Modellauswahl aus dem Katalog des Providers."""
     current = stored_model(settings, provider, mode) or default_model(provider, mode, DEFAULT_CONFIG)
     options = model_choices(provider, mode, current, default_model(provider, mode, DEFAULT_CONFIG))
-    choice = st.selectbox(
+    return st.selectbox(
         label,
-        [*options, _CUSTOM_MODEL],
+        options,
         index=options.index(current) if current in options else 0,
         key=f"{mode}_model_select_{provider}",
     )
-    if choice != _CUSTOM_MODEL:
-        return choice
-    return st.text_input(
-        f"{label} (Modell-ID)",
-        key=f"{mode}_model_custom_{provider}",
-        placeholder="z. B. gpt-oss:120b",
-    ).strip()
 
 
 llm_settings = load_llm_settings(_LLM_SETTINGS_PATH)

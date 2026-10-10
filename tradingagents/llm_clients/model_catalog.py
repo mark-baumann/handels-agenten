@@ -189,29 +189,34 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "minimax": _MINIMAX_MODELS,
     "minimax-cn": _MINIMAX_MODELS,
     # OpenRouter: fetched dynamically. Azure: any deployed model name.
-    # Ollama display labels intentionally omit a "local" marker — the
-    # endpoint is now configurable via OLLAMA_BASE_URL, so the same labels
-    # apply whether the user runs ollama-serve on localhost or against a
-    # remote host. The actual resolved endpoint is surfaced separately by
-    # cli.utils.confirm_ollama_endpoint() right after provider selection.
-    # "Custom model ID" lets users pick any model they have pulled via
-    # `ollama pull` beyond the three suggested defaults.
-    # Defaults for Ollama Cloud (https://ollama.com/v1) so the shipped dropdown
-    # actually resolves without a `model not found` 404. The endpoint serves
-    # these model ids (no `:latest` tag suffix); local Ollama installs can pull
-    # any `ollama pull <name>` and pick it via "Custom model ID".
+    # Ollama: the models served by Ollama Cloud (https://ollama.com/v1/models).
+    # The same ids work against a self-hosted Ollama server once pulled; the
+    # resolved endpoint is surfaced by cli.utils.confirm_ollama_endpoint().
     "ollama": {
         "quick": [
-            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
             ("GPT-OSS (20B)", "gpt-oss:20b"),
-            ("Qwen3.5 (397B)", "qwen3.5:397b"),
-            ("Custom model ID", "custom"),
+            ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
+            ("DeepSeek-V4.1-Flash - Fast", "deepseek-v4.1-flash"),
+            ("Nemotron 3 Nano (30B)", "nemotron-3-nano:30b"),
+            ("Gemma 4 (31B)", "gemma4:31b"),
+            ("Nemotron 3 Super", "nemotron-3-super"),
+            ("MiniMax-M2.7", "minimax-m2.7"),
+            ("GPT-OSS (120B)", "gpt-oss:120b"),
         ],
         "deep": [
-            ("GLM-5.2 - Latest flagship", "glm-5.2"),
-            ("GLM-5.1 - 745B, 200K ctx", "glm-5.1"),
+            ("GPT-OSS (120B)", "gpt-oss:120b"),
+            ("GLM-5.3 - Latest GLM flagship", "glm-5.3"),
+            ("GLM-5.2", "glm-5.2"),
+            ("DeepSeek-V4-Pro", "deepseek-v4-pro:0813"),
+            ("Kimi K3 - Latest Kimi flagship", "kimi-k3"),
+            ("Kimi K2.7 Code", "kimi-k2.7-code"),
+            ("Kimi K2.6", "kimi-k2.6"),
+            ("MiniMax-M3", "minimax-m3"),
+            ("Mistral Large 4", "mistral-large-4"),
+            ("Mistral Large 3 (675B)", "mistral-large-3:675b"),
+            ("Nemotron 3 Ultra", "nemotron-3-ultra"),
+            ("Nemotron 3 Super", "nemotron-3-super"),
             ("GLM-5.3-Flash - Fast, switchable thinking", "glm-5.3-flash"),
-            ("Custom model ID", "custom"),
         ],
     },
     # Generic OpenAI-compatible endpoint: the model is whatever the user's
