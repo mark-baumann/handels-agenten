@@ -13,10 +13,10 @@ from dotenv import load_dotenv
 # Exported server variables take precedence over the file.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from tradingagents.default_config import DEFAULT_CONFIG, provider_default_models  # noqa: E402
 from tradingagents.graph.trading_graph import TradingAgentsGraph  # noqa: E402
 from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
-from tradingagents.llm_clients.model_catalog import get_model_options  # noqa: E402
+from tradingagents.llm_clients.model_discovery import check_model_access, list_models  # noqa: E402
 from tradingagents.portfolio import PortfolioStore, load_portfolio_price_history  # noqa: E402
 from tradingagents.reporting import write_report_tree  # noqa: E402
 
@@ -191,10 +191,14 @@ def _portfolio_store() -> PortfolioStore:
     return PortfolioStore(Path(DEFAULT_CONFIG["data_cache_dir"]) / "portfolio.sqlite3")
 
 
-llm_provider = DEFAULT_CONFIG["llm_provider"]
-deep_model = DEFAULT_CONFIG["deep_think_llm"]
-quick_model = DEFAULT_CONFIG["quick_think_llm"]
-endpoint = DEFAULT_CONFIG.get("backend_url")
+env_provider = DEFAULT_CONFIG["llm_provider"]
+env_endpoint = DEFAULT_CONFIG.get("backend_url")
+
+_PROVIDER_LABELS = {
+    "ollama_cloud": "Ollama Cloud",
+    "ollama": "Ollama (lokal)",
+    "openai": "OpenAI (ChatGPT)",
+}
 
 
 def api_key_required(provider: str) -> str | None:
@@ -204,13 +208,113 @@ def api_key_required(provider: str) -> str | None:
     return get_api_key_env(provider)
 
 
-required_api_env = api_key_required(llm_provider)
-api_key_available = os.environ.get(required_api_env or "", "").strip()
-api_key_missing = bool(required_api_env) and not api_key_available
+def _has_api_key(provider: str) -> bool:
+    env_name = api_key_required(provider)
+    return not env_name or bool(os.environ.get(env_name, "").strip())
+
+
+def _provider_choices() -> list[str]:
+    """Server-Standard plus jeder weitere Anbieter, dessen API-Key gesetzt ist."""
+    choices = [env_provider]
+    for provider in ("ollama_cloud", "openai"):
+        if provider not in choices and _has_api_key(provider):
+            choices.append(provider)
+    return choices
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _available_models(
+    provider: str, base_url: str | None, include_snapshots: bool
+) -> tuple[list[str], str | None]:
+    """Live-Modellliste des Anbieters (15 min gecacht), sonst der statische Katalog."""
+    return list_models(provider, base_url, include_snapshots=include_snapshots)
+
+
+def _model_select(label: str, models: list[str], default: str, key: str, help_text: str) -> str:
+    # Eine gemerkte Auswahl, die es in der aktuellen Liste nicht mehr gibt, verwerfen.
+    if st.session_state.get(key) not in models:
+        st.session_state.pop(key, None)
+    return st.selectbox(label, models, index=models.index(default), key=key, help=help_text)
+
+
+with st.sidebar:
+    st.markdown("### ⚙️ Einstellungen")
+    st.divider()
+    st.markdown("#### 🤖 LLM")
+
+    provider_choices = _provider_choices()
+    if len(provider_choices) > 1:
+        llm_provider = st.selectbox(
+            "Anbieter",
+            provider_choices,
+            format_func=lambda provider: _PROVIDER_LABELS.get(provider, provider),
+            key="llm_provider_select",
+        )
+    else:
+        llm_provider = env_provider
+        st.markdown(f"**Anbieter:** {_PROVIDER_LABELS.get(llm_provider, llm_provider)}")
+
+    # Endpoint und Modell-Defaults aus der .env gelten nur für den Server-Standard.
+    if llm_provider == env_provider:
+        endpoint = env_endpoint
+        default_deep = DEFAULT_CONFIG["deep_think_llm"]
+        default_quick = DEFAULT_CONFIG["quick_think_llm"]
+    else:
+        endpoint = None
+        provider_defaults = provider_default_models(llm_provider)
+        default_deep = provider_defaults["deep_think_llm"]
+        default_quick = provider_defaults["quick_think_llm"]
+
+    required_api_env = api_key_required(llm_provider)
+    api_key_missing = not _has_api_key(llm_provider)
+
+    include_snapshots = llm_provider == "openai" and st.toggle(
+        "Datierte Snapshots anzeigen",
+        key="openai_include_snapshots",
+        help="Zeigt zusätzlich feste Versionen wie gpt-5-2025-08-07.",
+    )
+    live_models, models_error = _available_models(llm_provider, endpoint, include_snapshots)
+    # Die konfigurierten Defaults bleiben wählbar, auch wenn der Anbieter sie nicht listet.
+    available_models = list(dict.fromkeys([*live_models, default_deep, default_quick]))
+
+    deep_model = _model_select(
+        "Deep-Think Modell",
+        available_models,
+        default_deep,
+        f"deep_model_{llm_provider}",
+        "Für Research-Manager und Portfolio-Manager (gründliche Abwägung).",
+    )
+    quick_model = _model_select(
+        "Quick-Think Modell",
+        available_models,
+        default_quick,
+        f"quick_model_{llm_provider}",
+        "Für Analysten, Debatte und Trader (viele schnelle Aufrufe).",
+    )
+
+    if models_error:
+        st.warning(
+            "Modellliste konnte nicht live geladen werden – es wird die "
+            f"Standardauswahl gezeigt. ({models_error})"
+        )
+    else:
+        st.caption(f"{len(live_models)} Modelle live vom Anbieter geladen.")
+    if st.button("Modellliste aktualisieren", key="refresh_models"):
+        _available_models.clear()
+        st.rerun()
+
+    if api_key_missing:
+        st.error(
+            f"API-Key fehlt: `{required_api_env}`. "
+            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
+        )
+
+    st.divider()
+    st.caption("API-Keys und Standardwerte kommen aus der Server-`.env`.")
 
 _hero()
 status_chips = (
-    _chip(f"🤖 {llm_provider}")
+    _chip(f"🤖 {_PROVIDER_LABELS.get(llm_provider, llm_provider)}")
     + _chip(f"🧠 {deep_model}")
     + _chip(f"⚡ {quick_model}")
 )
@@ -223,46 +327,6 @@ if required_api_env:
 else:
     status_chips += _chip("🔑 Kein API-Key nötig", "ok")
 st.markdown(status_chips, unsafe_allow_html=True)
-
-with st.sidebar:
-    st.markdown("### ⚙️ Einstellungen")
-    st.divider()
-    st.markdown("#### 🤖 LLM (aus .env)")
-    st.markdown(
-        f"**Provider:** `{llm_provider}`  \n"
-        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
-    )
-
-    if llm_provider == "openai":
-        available_models = [model_id for _, model_id in get_model_options("openai", "deep")]
-        default_deep_index = available_models.index(deep_model) if deep_model in available_models else 0
-        default_quick_index = available_models.index(quick_model) if quick_model in available_models else 0
-        st.caption("Modell für die Analyse auswählen (vollständiger OpenAI-Modellkatalog).")
-        deep_model = st.selectbox(
-            "Deep-Think Modell", available_models, index=default_deep_index, key="deep_model_select"
-        )
-        quick_model = st.selectbox(
-            "Quick-Think Modell", available_models, index=default_quick_index, key="quick_model_select"
-        )
-        st.info(
-            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
-            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
-        )
-    else:
-        st.markdown(
-            f"**Deep-Think:** `{deep_model}`  \n**Quick-Think:** `{quick_model}`"
-        )
-
-    if api_key_missing:
-        st.error(
-            f"API-Key fehlt: `{required_api_env}`. "
-            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
-        )
-    elif required_api_env:
-        st.success(f"🔑 `{required_api_env}` gesetzt")
-
-    st.divider()
-    st.caption("Konfiguration wird zentral über die Server-`.env` bereitgestellt.")
 
 store = _portfolio_store()
 portfolio_tab, analysis_tab, reports_tab = st.tabs(
@@ -421,7 +485,20 @@ with analysis_tab:
         key="start_analysis",
     )
     run_portfolio_analysis = st.session_state.pop("run_portfolio_analysis", False)
-    if requested_analysis or run_portfolio_analysis:
+    start_analysis = requested_analysis or run_portfolio_analysis
+    if start_analysis:
+        # Gelistet heißt nicht nutzbar (Tarif, Guthaben): vor dem langen Lauf kurz prüfen.
+        with st.spinner("Prüfe Modellzugriff …"):
+            for model in dict.fromkeys((deep_model, quick_model)):
+                access_error = check_model_access(llm_provider, model, endpoint)
+                if access_error:
+                    st.error(
+                        f"Modell `{model}` ist aktuell nicht nutzbar – bitte ein anderes "
+                        f"wählen.  \n{access_error}"
+                    )
+                    start_analysis = False
+                    break
+    if start_analysis:
         ticker = ticker.strip().upper()
         result_q: queue.Queue = queue.Queue()
 

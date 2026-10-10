@@ -35,6 +35,15 @@ _PROVIDER_DEFAULT_MODELS = {
 }
 
 
+# Built-in (OpenAI) model defaults, used when no provider-specific row exists.
+_BUILTIN_DEFAULT_MODELS = {"deep_think_llm": "gpt-5.5", "quick_think_llm": "gpt-5.4-mini"}
+
+
+def provider_default_models(provider: str) -> dict[str, str]:
+    """Default deep/quick model ids for ``provider`` (e.g. a UI provider switch)."""
+    return dict(_PROVIDER_DEFAULT_MODELS.get(provider.lower(), _BUILTIN_DEFAULT_MODELS))
+
+
 _BOOL_TRUE = ("true", "1", "yes", "on")
 _BOOL_FALSE = ("false", "0", "no", "off")
 
@@ -95,8 +104,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "memory_log_max_entries": None,
     # LLM settings
     "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.5",
-    "quick_think_llm": "gpt-5.4-mini",
+    **_BUILTIN_DEFAULT_MODELS,
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a
