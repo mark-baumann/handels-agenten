@@ -15,8 +15,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 from tradingagents.graph.trading_graph import TradingAgentsGraph  # noqa: E402
-from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
-from tradingagents.llm_clients.model_catalog import get_model_options  # noqa: E402
+from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV, get_api_key_env  # noqa: E402
+from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options  # noqa: E402
 from tradingagents.portfolio import PortfolioStore, load_portfolio_price_history  # noqa: E402
 from tradingagents.reporting import write_report_tree  # noqa: E402
 
@@ -191,10 +191,13 @@ def _portfolio_store() -> PortfolioStore:
     return PortfolioStore(Path(DEFAULT_CONFIG["data_cache_dir"]) / "portfolio.sqlite3")
 
 
-llm_provider = DEFAULT_CONFIG["llm_provider"]
-deep_model = DEFAULT_CONFIG["deep_think_llm"]
-quick_model = DEFAULT_CONFIG["quick_think_llm"]
-endpoint = DEFAULT_CONFIG.get("backend_url")
+store = _portfolio_store()
+
+# Server-Umgebung liefert die Vorgaben; in der UI gespeicherte Werte gehen vor.
+env_provider = DEFAULT_CONFIG["llm_provider"]
+CUSTOM_MODEL_LABEL = "Eigene Modell-ID …"
+# Der OpenAI-Katalog beginnt mit Bild-/Audio-Modellen; hier die Chat-Vorgaben.
+_FALLBACK_MODELS = {"openai": {"deep": "gpt-5.5", "quick": "gpt-5.4-mini"}}
 
 
 def api_key_required(provider: str) -> str | None:
@@ -204,9 +207,103 @@ def api_key_required(provider: str) -> str | None:
     return get_api_key_env(provider)
 
 
-required_api_env = api_key_required(llm_provider)
-api_key_available = os.environ.get(required_api_env or "", "").strip()
-api_key_missing = bool(required_api_env) and not api_key_available
+def _available_providers() -> list[str]:
+    """Server-Provider plus alle Provider, deren API-Key serverseitig gesetzt ist."""
+    providers = [env_provider]
+    for provider, key_env in PROVIDER_API_KEY_ENV.items():
+        if provider in MODEL_OPTIONS and key_env and os.environ.get(key_env, "").strip():
+            providers.append(provider)
+    return list(dict.fromkeys(providers))
+
+
+def _model_choices(provider: str, mode: str, default: str) -> list[str]:
+    """Modell-IDs des Providers: zuerst die des Modus, dann die übrigen."""
+    other = "quick" if mode == "deep" else "deep"
+    try:
+        options = [*get_model_options(provider, mode), *get_model_options(provider, other)]
+    except KeyError:
+        options = []
+    choices = list(dict.fromkeys(model_id for _, model_id in options if model_id != "custom"))
+    if default and default not in choices:
+        choices.insert(0, default)
+    return choices
+
+
+def _default_model(provider: str, mode: str) -> str:
+    """Gespeicherter Standard, sonst Server-Vorgabe, sonst erstes Katalogmodell."""
+    saved = store.get_setting(f"{mode}_model:{provider}")
+    if saved:
+        return saved
+    if provider == env_provider:
+        return DEFAULT_CONFIG[f"{mode}_think_llm"]
+    fallback = _FALLBACK_MODELS.get(provider, {}).get(mode)
+    return fallback or next(iter(_model_choices(provider, mode, "")), "")
+
+
+def _model_select(label: str, provider: str, mode: str) -> str:
+    """Selectbox mit Katalogmodellen plus Freitext für beliebige Modell-IDs."""
+    default = _default_model(provider, mode)
+    key = f"{mode}_model_select_{provider}"
+    choices = [*_model_choices(provider, mode, default), CUSTOM_MODEL_LABEL]
+    picked = st.selectbox(
+        label, choices, index=choices.index(default) if default in choices else 0, key=key
+    )
+    if picked != CUSTOM_MODEL_LABEL:
+        return picked
+    custom = st.text_input(f"{label} (ID)", value=default, key=f"{key}_custom")
+    return custom.strip() or default
+
+
+with st.sidebar:
+    st.markdown("### ⚙️ Einstellungen")
+    st.divider()
+    st.markdown("#### 🤖 LLM")
+
+    providers = _available_providers()
+    saved_provider = store.get_setting("llm_provider")
+    default_provider = saved_provider if saved_provider in providers else env_provider
+    llm_provider = st.selectbox(
+        "Provider", providers, index=providers.index(default_provider), key="provider_select"
+    )
+    # Der Endpoint aus der Server-Umgebung gehört nur zum dortigen Provider.
+    endpoint = DEFAULT_CONFIG.get("backend_url") if llm_provider == env_provider else None
+    st.caption(f"Endpoint: `{endpoint or 'Provider-Standard'}`")
+
+    deep_model = _model_select("Deep-Think Modell", llm_provider, "deep")
+    quick_model = _model_select("Quick-Think Modell", llm_provider, "quick")
+    model_missing = not deep_model or not quick_model
+    if model_missing:
+        st.warning("Bitte für beide Modelle eine Modell-ID eintragen.")
+    if llm_provider == "openai":
+        st.info(
+            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
+            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
+        )
+
+    if st.button(
+        "💾 Als Standard speichern",
+        disabled=model_missing,
+        use_container_width=True,
+        key="save_llm_defaults",
+    ):
+        store.set_setting("llm_provider", llm_provider)
+        store.set_setting(f"deep_model:{llm_provider}", deep_model)
+        store.set_setting(f"quick_model:{llm_provider}", quick_model)
+        st.success("Als Standard gespeichert.")
+
+    required_api_env = api_key_required(llm_provider)
+    api_key_missing = bool(required_api_env) and not os.environ.get(required_api_env, "").strip()
+    llm_not_ready = api_key_missing or model_missing
+    if api_key_missing:
+        st.error(
+            f"API-Key fehlt: `{required_api_env}`. "
+            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
+        )
+    elif required_api_env:
+        st.success(f"🔑 `{required_api_env}` gesetzt")
+
+    st.divider()
+    st.caption("Zugangsdaten kommen aus der Server-`.env`.")
 
 _hero()
 status_chips = (
@@ -224,47 +321,6 @@ else:
     status_chips += _chip("🔑 Kein API-Key nötig", "ok")
 st.markdown(status_chips, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("### ⚙️ Einstellungen")
-    st.divider()
-    st.markdown("#### 🤖 LLM (aus .env)")
-    st.markdown(
-        f"**Provider:** `{llm_provider}`  \n"
-        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
-    )
-
-    if llm_provider == "openai":
-        available_models = [model_id for _, model_id in get_model_options("openai", "deep")]
-        default_deep_index = available_models.index(deep_model) if deep_model in available_models else 0
-        default_quick_index = available_models.index(quick_model) if quick_model in available_models else 0
-        st.caption("Modell für die Analyse auswählen (vollständiger OpenAI-Modellkatalog).")
-        deep_model = st.selectbox(
-            "Deep-Think Modell", available_models, index=default_deep_index, key="deep_model_select"
-        )
-        quick_model = st.selectbox(
-            "Quick-Think Modell", available_models, index=default_quick_index, key="quick_model_select"
-        )
-        st.info(
-            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
-            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
-        )
-    else:
-        st.markdown(
-            f"**Deep-Think:** `{deep_model}`  \n**Quick-Think:** `{quick_model}`"
-        )
-
-    if api_key_missing:
-        st.error(
-            f"API-Key fehlt: `{required_api_env}`. "
-            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
-        )
-    elif required_api_env:
-        st.success(f"🔑 `{required_api_env}` gesetzt")
-
-    st.divider()
-    st.caption("Konfiguration wird zentral über die Server-`.env` bereitgestellt.")
-
-store = _portfolio_store()
 portfolio_tab, analysis_tab, reports_tab = st.tabs(
     ["📊 Portfolio", "🔎 Analyse", "🗂️ Berichte"]
 )
@@ -376,7 +432,7 @@ with portfolio_tab:
                     if st.button(
                         "🔎 Analysieren",
                         key=f"analyze_{symbol}",
-                        disabled=api_key_missing,
+                        disabled=llm_not_ready,
                         type="primary",
                         use_container_width=True,
                     ):
@@ -417,7 +473,7 @@ with analysis_tab:
     requested_analysis = st.button(
         "Analyse starten",
         type="primary",
-        disabled=not ticker.strip() or api_key_missing,
+        disabled=not ticker.strip() or llm_not_ready,
         key="start_analysis",
     )
     run_portfolio_analysis = st.session_state.pop("run_portfolio_analysis", False)
