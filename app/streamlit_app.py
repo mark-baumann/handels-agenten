@@ -208,6 +208,67 @@ required_api_env = api_key_required(llm_provider)
 api_key_available = os.environ.get(required_api_env or "", "").strip()
 api_key_missing = bool(required_api_env) and not api_key_available
 
+CUSTOM_MODEL_LABEL = "Eigene Modell-ID …"
+
+
+def _model_choices(provider: str, mode: str, default: str) -> list[str]:
+    """Modell-IDs des Providers: zuerst die des Modus, dann die übrigen."""
+    other = "quick" if mode == "deep" else "deep"
+    try:
+        options = [*get_model_options(provider, mode), *get_model_options(provider, other)]
+    except KeyError:
+        options = []
+    choices = list(dict.fromkeys(model_id for _, model_id in options if model_id != "custom"))
+    if default and default not in choices:
+        choices.insert(0, default)
+    return choices
+
+
+def _model_select(label: str, provider: str, mode: str, default: str, key: str) -> str:
+    """Selectbox mit Katalogmodellen plus Freitext für beliebige Modell-IDs."""
+    choices = [*_model_choices(provider, mode, default), CUSTOM_MODEL_LABEL]
+    picked = st.selectbox(
+        label, choices, index=choices.index(default) if default in choices else 0, key=key
+    )
+    if picked != CUSTOM_MODEL_LABEL:
+        return picked
+    custom = st.text_input(f"{label} (ID)", value=default, key=f"{key}_custom")
+    return custom.strip() or default
+
+
+with st.sidebar:
+    st.markdown("### ⚙️ Einstellungen")
+    st.divider()
+    st.markdown("#### 🤖 LLM")
+    st.markdown(
+        f"**Provider:** `{llm_provider}`  \n"
+        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
+    )
+
+    st.caption("Modell für Analyse und Bericht auswählen.")
+    deep_model = _model_select(
+        "Deep-Think Modell", llm_provider, "deep", deep_model, "deep_model_select"
+    )
+    quick_model = _model_select(
+        "Quick-Think Modell", llm_provider, "quick", quick_model, "quick_model_select"
+    )
+    if llm_provider == "openai":
+        st.info(
+            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
+            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
+        )
+
+    if api_key_missing:
+        st.error(
+            f"API-Key fehlt: `{required_api_env}`. "
+            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
+        )
+    elif required_api_env:
+        st.success(f"🔑 `{required_api_env}` gesetzt")
+
+    st.divider()
+    st.caption("Provider und Zugangsdaten kommen aus der Server-`.env`.")
+
 _hero()
 status_chips = (
     _chip(f"🤖 {llm_provider}")
@@ -223,46 +284,6 @@ if required_api_env:
 else:
     status_chips += _chip("🔑 Kein API-Key nötig", "ok")
 st.markdown(status_chips, unsafe_allow_html=True)
-
-with st.sidebar:
-    st.markdown("### ⚙️ Einstellungen")
-    st.divider()
-    st.markdown("#### 🤖 LLM (aus .env)")
-    st.markdown(
-        f"**Provider:** `{llm_provider}`  \n"
-        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
-    )
-
-    if llm_provider == "openai":
-        available_models = [model_id for _, model_id in get_model_options("openai", "deep")]
-        default_deep_index = available_models.index(deep_model) if deep_model in available_models else 0
-        default_quick_index = available_models.index(quick_model) if quick_model in available_models else 0
-        st.caption("Modell für die Analyse auswählen (vollständiger OpenAI-Modellkatalog).")
-        deep_model = st.selectbox(
-            "Deep-Think Modell", available_models, index=default_deep_index, key="deep_model_select"
-        )
-        quick_model = st.selectbox(
-            "Quick-Think Modell", available_models, index=default_quick_index, key="quick_model_select"
-        )
-        st.info(
-            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
-            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
-        )
-    else:
-        st.markdown(
-            f"**Deep-Think:** `{deep_model}`  \n**Quick-Think:** `{quick_model}`"
-        )
-
-    if api_key_missing:
-        st.error(
-            f"API-Key fehlt: `{required_api_env}`. "
-            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
-        )
-    elif required_api_env:
-        st.success(f"🔑 `{required_api_env}` gesetzt")
-
-    st.divider()
-    st.caption("Konfiguration wird zentral über die Server-`.env` bereitgestellt.")
 
 store = _portfolio_store()
 portfolio_tab, analysis_tab, reports_tab = st.tabs(
