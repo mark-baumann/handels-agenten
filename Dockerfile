@@ -15,6 +15,10 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# The deployed dashboard runs on Ollama Cloud; OLLAMA_API_KEY comes from the
+# server .env, and a TRADINGAGENTS_LLM_PROVIDER set there still takes precedence.
+ENV TRADINGAGENTS_LLM_PROVIDER=ollama_cloud
+
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
