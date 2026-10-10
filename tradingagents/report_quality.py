@@ -165,9 +165,9 @@ def resolve_agent_conflict(report: Any) -> dict[str, Any]:
 
     distinct_actions = {normalize_action(action) for action in signals.values()}
     if len(distinct_actions) > 1:
-        if any(action in {"SELL", "UNDERWEIGHT"} for action in distinct_actions):
-            final_action = "HOLD"
-        elif any(action in {"BUY", "OVERWEIGHT"} for action in distinct_actions) and "HOLD" in distinct_actions:
+        has_bearish = any(action in {"SELL", "UNDERWEIGHT"} for action in distinct_actions)
+        has_bullish = any(action in {"BUY", "OVERWEIGHT"} for action in distinct_actions)
+        if has_bearish or (has_bullish and "HOLD" in distinct_actions):
             final_action = "HOLD"
         else:
             final_action = max(distinct_actions, key=lambda value: ACTION_PRIORITY.get(value, 0))
