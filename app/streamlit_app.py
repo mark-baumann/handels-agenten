@@ -16,9 +16,18 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 from tradingagents.graph.trading_graph import TradingAgentsGraph  # noqa: E402
 from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
-from tradingagents.llm_clients.model_catalog import get_model_options  # noqa: E402
 from tradingagents.portfolio import PortfolioStore, load_portfolio_price_history  # noqa: E402
 from tradingagents.reporting import write_report_tree  # noqa: E402
+from tradingagents.ui_settings import (  # noqa: E402
+    default_model,
+    displayed_endpoint,
+    load_llm_settings,
+    model_choices,
+    provider_choices,
+    resolve_endpoint,
+    save_llm_settings,
+    stored_model,
+)
 
 st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide")
 
@@ -172,7 +181,6 @@ def _stat(label: str, value: str) -> None:
 
 _apply_theme_css()
 
-# Provider, model defaults and credentials come from the server environment.
 def _save_analysis_report(final_state: dict, ticker: str, analysis_date: date) -> Path:
     """Persistiert jeden UI-Lauf in einem datierten Report-Ordner."""
     ticker_safe = ticker.strip().upper().replace("/", "_")
@@ -191,10 +199,10 @@ def _portfolio_store() -> PortfolioStore:
     return PortfolioStore(Path(DEFAULT_CONFIG["data_cache_dir"]) / "portfolio.sqlite3")
 
 
-llm_provider = DEFAULT_CONFIG["llm_provider"]
-deep_model = DEFAULT_CONFIG["deep_think_llm"]
-quick_model = DEFAULT_CONFIG["quick_think_llm"]
-endpoint = DEFAULT_CONFIG.get("backend_url")
+# Credentials and endpoints come from the server environment; provider and
+# models are chosen in the sidebar and persisted next to the portfolio data.
+_LLM_SETTINGS_PATH = Path(DEFAULT_CONFIG["data_cache_dir"]) / "llm_settings.json"
+_CUSTOM_MODEL = "Eigene Modell-ID …"
 
 
 def api_key_required(provider: str) -> str | None:
@@ -204,15 +212,88 @@ def api_key_required(provider: str) -> str | None:
     return get_api_key_env(provider)
 
 
-required_api_env = api_key_required(llm_provider)
-api_key_available = os.environ.get(required_api_env or "", "").strip()
-api_key_missing = bool(required_api_env) and not api_key_available
+def _model_select(label: str, provider: str, mode: str, settings: dict) -> str:
+    """Modellauswahl aus dem Katalog des Providers oder als freie Modell-ID."""
+    current = stored_model(settings, provider, mode) or default_model(provider, mode, DEFAULT_CONFIG)
+    options = model_choices(provider, mode, current, default_model(provider, mode, DEFAULT_CONFIG))
+    choice = st.selectbox(
+        label,
+        [*options, _CUSTOM_MODEL],
+        index=options.index(current) if current in options else 0,
+        key=f"{mode}_model_select_{provider}",
+    )
+    if choice != _CUSTOM_MODEL:
+        return choice
+    return st.text_input(
+        f"{label} (Modell-ID)",
+        key=f"{mode}_model_custom_{provider}",
+        placeholder="z. B. gpt-oss:120b",
+    ).strip()
+
+
+llm_settings = load_llm_settings(_LLM_SETTINGS_PATH)
+providers = provider_choices(DEFAULT_CONFIG)
+saved_provider = llm_settings.get("provider")
+default_provider = saved_provider if saved_provider in providers else DEFAULT_CONFIG["llm_provider"]
+
+with st.sidebar:
+    st.markdown("### ⚙️ Einstellungen")
+    st.divider()
+    st.markdown("#### 🤖 LLM")
+    llm_provider = st.selectbox(
+        "Provider",
+        list(providers),
+        index=list(providers).index(default_provider),
+        format_func=providers.get,
+        key="llm_provider_select",
+    )
+    deep_model = _model_select("Deep-Think Modell", llm_provider, "deep", llm_settings)
+    quick_model = _model_select("Quick-Think Modell", llm_provider, "quick", llm_settings)
+    if llm_provider == "openai":
+        st.caption(
+            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
+            "Moderations- und TTS-Modelle können keine Analyse ausführen."
+        )
+    endpoint = resolve_endpoint(llm_provider, DEFAULT_CONFIG)
+    st.caption(f"Endpoint: `{displayed_endpoint(llm_provider, DEFAULT_CONFIG)}`")
+
+    required_api_env = api_key_required(llm_provider)
+    api_key_available = os.environ.get(required_api_env or "", "").strip()
+    api_key_missing = bool(required_api_env) and not api_key_available
+    model_missing = not deep_model or not quick_model
+
+    if api_key_missing:
+        st.error(
+            f"API-Key fehlt: `{required_api_env}`. "
+            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
+        )
+    elif required_api_env:
+        st.success(f"🔑 `{required_api_env}` gesetzt")
+    if model_missing:
+        st.warning("Bitte für beide Modelle eine Modell-ID angeben.")
+
+    st.divider()
+    st.caption("API-Keys und Endpoints werden zentral über die Server-`.env` bereitgestellt.")
+
+if not model_missing:
+    selected_settings = {
+        "provider": llm_provider,
+        "models": {
+            **(llm_settings.get("models") if isinstance(llm_settings.get("models"), dict) else {}),
+            llm_provider: {"deep": deep_model, "quick": quick_model},
+        },
+    }
+    if selected_settings != llm_settings:
+        try:
+            save_llm_settings(_LLM_SETTINGS_PATH, selected_settings)
+        except OSError as exc:
+            st.sidebar.warning(f"LLM-Auswahl konnte nicht gespeichert werden: {exc}")
 
 _hero()
 status_chips = (
-    _chip(f"🤖 {llm_provider}")
-    + _chip(f"🧠 {deep_model}")
-    + _chip(f"⚡ {quick_model}")
+    _chip(f"🤖 {providers[llm_provider]}")
+    + _chip(f"🧠 {deep_model or '–'}")
+    + _chip(f"⚡ {quick_model or '–'}")
 )
 if required_api_env:
     status_chips += (
@@ -223,46 +304,6 @@ if required_api_env:
 else:
     status_chips += _chip("🔑 Kein API-Key nötig", "ok")
 st.markdown(status_chips, unsafe_allow_html=True)
-
-with st.sidebar:
-    st.markdown("### ⚙️ Einstellungen")
-    st.divider()
-    st.markdown("#### 🤖 LLM (aus .env)")
-    st.markdown(
-        f"**Provider:** `{llm_provider}`  \n"
-        f"**Endpoint:** `{endpoint or 'Provider-Standard'}`"
-    )
-
-    if llm_provider == "openai":
-        available_models = [model_id for _, model_id in get_model_options("openai", "deep")]
-        default_deep_index = available_models.index(deep_model) if deep_model in available_models else 0
-        default_quick_index = available_models.index(quick_model) if quick_model in available_models else 0
-        st.caption("Modell für die Analyse auswählen (vollständiger OpenAI-Modellkatalog).")
-        deep_model = st.selectbox(
-            "Deep-Think Modell", available_models, index=default_deep_index, key="deep_model_select"
-        )
-        quick_model = st.selectbox(
-            "Quick-Think Modell", available_models, index=default_quick_index, key="quick_model_select"
-        )
-        st.info(
-            "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
-            "Moderations- und TTS-Modelle sind auswählbar, können aber keine Analyse ausführen."
-        )
-    else:
-        st.markdown(
-            f"**Deep-Think:** `{deep_model}`  \n**Quick-Think:** `{quick_model}`"
-        )
-
-    if api_key_missing:
-        st.error(
-            f"API-Key fehlt: `{required_api_env}`. "
-            "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
-        )
-    elif required_api_env:
-        st.success(f"🔑 `{required_api_env}` gesetzt")
-
-    st.divider()
-    st.caption("Konfiguration wird zentral über die Server-`.env` bereitgestellt.")
 
 store = _portfolio_store()
 portfolio_tab, analysis_tab, reports_tab = st.tabs(
@@ -376,7 +417,7 @@ with portfolio_tab:
                     if st.button(
                         "🔎 Analysieren",
                         key=f"analyze_{symbol}",
-                        disabled=api_key_missing,
+                        disabled=api_key_missing or model_missing,
                         type="primary",
                         use_container_width=True,
                     ):
@@ -417,7 +458,7 @@ with analysis_tab:
     requested_analysis = st.button(
         "Analyse starten",
         type="primary",
-        disabled=not ticker.strip() or api_key_missing,
+        disabled=not ticker.strip() or api_key_missing or model_missing,
         key="start_analysis",
     )
     run_portfolio_analysis = st.session_state.pop("run_portfolio_analysis", False)
