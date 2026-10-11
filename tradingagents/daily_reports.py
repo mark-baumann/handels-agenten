@@ -146,10 +146,13 @@ class DailyReportScheduler:
         store: PortfolioStore,
         config_factory: Callable[[], dict],
         check_interval: float = 300,
+        extra_jobs: list[Callable[[date, threading.Event], object]] | None = None,
     ):
         self.store = store
         self.config_factory = config_factory
         self.check_interval = check_interval
+        # Further daily jobs (e.g. the AI's duel turn), run after the reports.
+        self.extra_jobs = list(extra_jobs or [])
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="daily-reports", daemon=True)
 
@@ -181,6 +184,11 @@ class DailyReportScheduler:
                 due = self.due_date()
                 if due is not None:
                     run_due_reports(self.store, self.config_factory, due, stop=self._stop)
+                    for job in self.extra_jobs:
+                        try:
+                            job(due, self._stop)
+                        except Exception:
+                            logger.exception("Daily job %r failed", job)
             except Exception:
                 logger.exception("Daily report scheduler iteration failed")
             self._stop.wait(self.check_interval)

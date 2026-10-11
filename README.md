@@ -125,6 +125,10 @@ docker compose run --rm tradingagents
 The dashboard uses Ollama Cloud with `gpt-oss:120b` by default (free plan,
 set `OLLAMA_API_KEY`) and creates a report for every portfolio holding once a
 day (`TRADINGAGENTS_DAILY_REPORT_TIME`, default 07:00 Europe/Berlin).
+The "⚔️ Ich vs. KI" tab is a paper-trading duel: you and the agents start with
+the same virtual cash; the AI scouts stocks via Yahoo screeners, analyses them
+with the full pipeline once a day and trades on the resulting ratings, with
+every trade linked to the report that justifies it.
 
 ### Required APIs
 

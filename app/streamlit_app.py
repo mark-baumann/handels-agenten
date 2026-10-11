@@ -1,9 +1,11 @@
 """Handels-Agenten — Streamlit Web-UI"""
 import inspect
+import threading
 import time
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -14,11 +16,22 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 from tradingagents.daily_reports import (  # noqa: E402
     DailyReportScheduler,
     missing_api_key,
+    previous_trading_day,
     reports_enabled,
     schedule_time,
     schedule_zone,
 )
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from tradingagents.duel import (  # noqa: E402
+    PLAYERS,
+    DuelStore,
+    EurQuotes,
+    daily_duel_job,
+    duel_enabled,
+    max_analyses,
+    max_picks,
+    run_ai_turn,
+)
 from tradingagents.live_progress import AnalysisJob, stage_progress  # noqa: E402
 from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
 from tradingagents.news_impact import news_with_impact  # noqa: E402
@@ -209,7 +222,39 @@ def _daily_scheduler() -> DailyReportScheduler | None:
     """One scheduler thread per server process, shared by all sessions."""
     if not reports_enabled():
         return None
-    return DailyReportScheduler(_portfolio_store(), _saved_run_config).start()
+    jobs = []
+    if duel_enabled():
+        jobs.append(daily_duel_job(_portfolio_store(), _duel_store(), _saved_run_config))
+    return DailyReportScheduler(_portfolio_store(), _saved_run_config, extra_jobs=jobs).start()
+
+
+def _duel_store() -> DuelStore:
+    return DuelStore(Path(DEFAULT_CONFIG["data_cache_dir"]) / "portfolio.sqlite3")
+
+
+@st.cache_resource
+def _duel_runner() -> dict:
+    """Process-wide handle for a manually started AI turn."""
+    return {"thread": None}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _eur_price(symbol: str) -> float:
+    return EurQuotes()(symbol)
+
+
+def _start_ai_turn(turn_date: date) -> bool:
+    runner = _duel_runner()
+    thread = runner["thread"]
+    if thread is not None and thread.is_alive():
+        return False
+
+    def play():
+        run_ai_turn(_portfolio_store(), _duel_store(), _saved_run_config, turn_date)
+
+    runner["thread"] = threading.Thread(target=play, name="duel-turn", daemon=True)
+    runner["thread"].start()
+    return True
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -417,8 +462,8 @@ else:
     price_history, latest_prices, price_errors = None, {}, {}
 latest_reports = store.latest_reports()
 
-portfolio_tab, news_tab, analysis_tab, reports_tab = st.tabs(
-    ["📊 Portfolio", "📰 Nachrichten", "🔎 Analyse", "🗂️ Berichte"]
+portfolio_tab, duel_tab, news_tab, analysis_tab, reports_tab = st.tabs(
+    ["📊 Portfolio", "⚔️ Ich vs. KI", "📰 Nachrichten", "🔎 Analyse", "🗂️ Berichte"]
 )
 
 with portfolio_tab:
@@ -748,6 +793,233 @@ with reports_tab:
                 )
             with _box():
                 st.markdown(full_report["report_markdown"])
+
+with duel_tab:
+    duel = _duel_store()
+    st.subheader("⚔️ Ich vs. KI")
+    st.caption(
+        "Beide starten mit demselben Spielgeld und handeln virtuell zu echten Kursen (in €). "
+        "Du handelst frei; die KI spielt jeden Tag automatisch einen Zug: Sie sucht sich "
+        "Kandidaten über Yahoo-Screener, lässt die komplette Multi-Agenten-Analyse laufen und "
+        "handelt nach dem Rating des Portfolio-Managers. Jeder KI-Trade ist begründet."
+    )
+
+    def _quote(symbol: str) -> float:
+        return _eur_price(symbol)
+
+    standings = {player: duel.valuation(player, _quote) for player in PLAYERS}
+    me_val, ai_val = standings["me"], standings["ai"]
+    lead = me_val["total"] - ai_val["total"]
+    if abs(lead) < 0.01:
+        st.info("🤝 Gleichstand.")
+    elif lead > 0:
+        st.success(f"🏆 Du führst mit {lead:,.2f} € vor der KI.")
+    else:
+        st.error(f"🤖 Die KI führt mit {-lead:,.2f} € vor dir.")
+
+    score_me, score_ai = st.columns(2)
+    score_me.metric(
+        "🧑 Ich — Depotwert", f"{me_val['total']:,.2f} €", f"{me_val['return'] * 100:+.2f}%"
+    )
+    score_ai.metric(
+        "🤖 KI — Depotwert", f"{ai_val['total']:,.2f} €", f"{ai_val['return'] * 100:+.2f}%"
+    )
+
+    history = duel.equity_history()
+    if history:
+        frame = pd.DataFrame(history).pivot(index="day", columns="player", values="value")
+        frame = frame.rename(columns=PLAYERS)
+        frame.index = pd.to_datetime(frame.index)
+        st.markdown("**Depotwert im Verlauf**")
+        st.line_chart(frame)
+
+    def _position_rows(valuation: dict) -> list[dict]:
+        return [
+            {
+                "Aktie": p["symbol"],
+                "Stück": round(p["shares"], 4),
+                "Kurs €": round(p["price"], 2),
+                "Wert €": round(p["value"], 2),
+                "G/V €": round(p["pnl"], 2),
+                "G/V %": round(p["pnl"] / p["cost"] * 100, 2) if p["cost"] else None,
+            }
+            for p in valuation["positions"]
+        ]
+
+    me_col, ai_col = st.columns(2)
+    with me_col, _box():
+        st.markdown("**🧑 Mein Depot**")
+        st.caption(f"Spielgeld: {me_val['cash']:,.2f} €")
+        with st.form("duel_trade_form", clear_on_submit=True):
+            trade_symbol = st.text_input("Ticker", placeholder="z. B. NVDA, SAP.DE")
+            side_col, amount_col = st.columns(2)
+            with side_col:
+                trade_side = st.radio("Aktion", ["Kaufen", "Verkaufen"], horizontal=True)
+            with amount_col:
+                trade_amount = st.number_input(
+                    "Betrag in €", min_value=0.0, value=1000.0, step=100.0
+                )
+            sell_all = st.checkbox("Ganze Position verkaufen")
+            submitted = st.form_submit_button("Order ausführen", type="primary")
+        if submitted:
+            try:
+                symbol = trade_symbol.strip().upper()
+                price = _eur_price(symbol)
+                if trade_side == "Kaufen":
+                    shares = trade_amount / price
+                    duel.trade("me", symbol, "buy", shares, price)
+                else:
+                    held = next(
+                        (p["shares"] for p in me_val["positions"] if p["symbol"] == symbol), 0.0
+                    )
+                    shares = held if sell_all else min(held, trade_amount / price)
+                    duel.trade("me", symbol, "sell", shares, price)
+                duel.record_equity(_quote)
+                st.success(
+                    f"{trade_side}: {shares:,.4f} × {symbol} zu {price:,.2f} € "
+                    f"= {shares * price:,.2f} €"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Order abgelehnt: {exc}")
+        if me_val["positions"]:
+            st.dataframe(_position_rows(me_val), hide_index=True, use_container_width=True)
+        else:
+            st.caption("Noch keine Positionen.")
+    with ai_col, _box():
+        st.markdown("**🤖 Depot der KI**")
+        st.caption(f"Spielgeld: {ai_val['cash']:,.2f} €")
+        if ai_val["positions"]:
+            st.dataframe(_position_rows(ai_val), hide_index=True, use_container_width=True)
+        else:
+            st.caption("Die KI hat noch nicht gehandelt.")
+
+    st.markdown("#### 🤖 Züge der KI")
+    turn_date = previous_trading_day(date.today())
+    runner_thread = _duel_runner()["thread"]
+    turn_running = runner_thread is not None and runner_thread.is_alive()
+    info_col, button_col = st.columns([3, 1])
+    with info_col:
+        if scheduler is not None and duel_enabled():
+            st.caption(
+                f"Automatisch täglich ab {schedule_time().strftime('%H:%M')} "
+                f"({schedule_zone().key}); nächster Start "
+                f"{scheduler.next_run().strftime('%d.%m. %H:%M')}. "
+                f"Pro Zug bis zu {max_picks()} neue Kandidaten, maximal {max_analyses()} Analysen."
+            )
+        else:
+            st.caption("Automatische KI-Züge sind deaktiviert.")
+    with button_col:
+        if st.button(
+            "▶️ KI-Zug jetzt",
+            disabled=not llm_ready or turn_running,
+            use_container_width=True,
+            help=f"Spielt den Zug für den Handelstag {turn_date} (falls noch nicht gespielt).",
+        ) and _start_ai_turn(turn_date):
+            st.toast("Die KI denkt nach … das dauert einige Minuten.")
+            time.sleep(1)
+            st.rerun()
+
+    turns = duel.turns(limit=10)
+    if not turns:
+        st.caption("Noch kein KI-Zug gespielt.")
+    for index, turn in enumerate(turns):
+        status = {"done": "✅", "running": "⏳", "error": "❌"}.get(turn["status"], turn["status"])
+        analyses = turn["analyses"] or []
+        trades_made = sum(1 for a in analyses if a.get("trade"))
+        with st.expander(
+            f"{status} Zug für {turn['turn_date']} · {len(analyses)} Analysen · {trades_made} Trades",
+            expanded=index == 0,
+        ):
+            if turn["error"]:
+                st.error(turn["error"])
+            scouting = turn["scouting"] or {}
+            if scouting.get("picks"):
+                st.markdown(
+                    f"**🔭 Scouting** — {len(scouting.get('candidates', []))} Kandidaten aus "
+                    "den Yahoo-Screenern, davon ausgewählt:"
+                )
+                st.dataframe(
+                    [{"Aktie": p["symbol"], "Warum interessant": p["reason"]} for p in scouting["picks"]],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            if scouting.get("candidates"):
+                with st.popover("Alle Kandidaten") if hasattr(st, "popover") else st.container():
+                    st.dataframe(
+                        [
+                            {
+                                "Aktie": c["symbol"],
+                                "Name": c["name"],
+                                "Heute %": c.get("change_pct"),
+                                "52W %": c.get("change_52w_pct"),
+                                "KGV": c.get("pe"),
+                                "Screener": ", ".join(c.get("screens", [])),
+                            }
+                            for c in scouting["candidates"]
+                        ],
+                        hide_index=True,
+                    )
+            for analysis in analyses:
+                symbol = analysis["symbol"]
+                if analysis.get("error"):
+                    st.warning(f"{symbol}: Analyse fehlgeschlagen ({analysis['error']})")
+                    continue
+                rating = analysis.get("rating", "—")
+                trade = analysis.get("trade")
+                action = (
+                    f"{'🟢 kauft' if trade['side'] == 'buy' else '🔴 verkauft'} "
+                    f"{trade['shares']:,.4f} Stück für {trade['amount']:,.2f} €"
+                    if trade
+                    else "hält still"
+                )
+                st.markdown(
+                    f"{_DECISION_ICON[_decision_tone(rating)]} **{symbol}** · Rating "
+                    f"**{rating}** → {action}"
+                )
+                report_id = analysis.get("report_id")
+                if report_id and st.checkbox(
+                    f"Warum? Vollständige Analyse zu {symbol} zeigen",
+                    key=f"duel_report_{turn['turn_date']}_{symbol}",
+                ):
+                    report = store.get_report(report_id)
+                    if report:
+                        with _box():
+                            st.markdown(report["report_markdown"])
+            if turn["status"] == "running":
+                st.caption("⏳ Zug läuft — Seite neu laden, um den Fortschritt zu sehen.")
+
+    st.markdown("#### 📜 Alle Trades")
+    all_trades = duel.trades(limit=200)
+    if not all_trades:
+        st.caption("Noch keine Trades.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "Zeit": t["created_at"][:16].replace("T", " "),
+                    "Spieler": PLAYERS[t["player"]],
+                    "Aktie": t["symbol"],
+                    "Aktion": "Kauf" if t["side"] == "buy" else "Verkauf",
+                    "Stück": round(t["shares"], 4),
+                    "Kurs €": round(t["price"], 2),
+                    "Betrag €": round(t["amount"], 2),
+                    "Rating": t["rating"] or "",
+                    "Begründung (Portfolio-Manager)": (t["reason"] or "")[:300],
+                }
+                for t in all_trades
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    with st.expander("🔄 Neues Spiel starten"):
+        st.caption("Setzt beide Depots auf das Startkapital zurück und löscht alle Trades.")
+        confirm_reset = st.checkbox("Ja, ich will wirklich neu anfangen", key="duel_reset_confirm")
+        if st.button("Spiel zurücksetzen", disabled=not confirm_reset):
+            duel.reset()
+            st.rerun()
+
 
 if job is not None and job.running:
     running_notice.info(
