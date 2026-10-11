@@ -1,9 +1,7 @@
 """Handels-Agenten — Streamlit Web-UI"""
 import inspect
-import os
-import queue
-import threading
-from datetime import date, datetime, timedelta
+import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -13,11 +11,18 @@ from dotenv import load_dotenv
 # Exported server variables take precedence over the file.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+from tradingagents.daily_reports import (  # noqa: E402
+    DailyReportScheduler,
+    missing_api_key,
+    reports_enabled,
+    schedule_time,
+    schedule_zone,
+)
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
-from tradingagents.graph.trading_graph import TradingAgentsGraph  # noqa: E402
+from tradingagents.live_progress import AnalysisJob, stage_progress  # noqa: E402
 from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
+from tradingagents.news_impact import news_with_impact  # noqa: E402
 from tradingagents.portfolio import PortfolioStore, load_portfolio_price_history  # noqa: E402
-from tradingagents.reporting import write_report_tree  # noqa: E402
 from tradingagents.ui_settings import (  # noqa: E402
     default_model,
     displayed_endpoint,
@@ -25,7 +30,9 @@ from tradingagents.ui_settings import (  # noqa: E402
     model_choices,
     provider_choices,
     resolve_endpoint,
+    run_config,
     save_llm_settings,
+    selected_provider,
     stored_model,
 )
 
@@ -181,19 +188,6 @@ def _stat(label: str, value: str) -> None:
 
 _apply_theme_css()
 
-def _save_analysis_report(final_state: dict, ticker: str, analysis_date: date) -> Path:
-    """Persistiert jeden UI-Lauf in einem datierten Report-Ordner."""
-    ticker_safe = ticker.strip().upper().replace("/", "_")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_dir = (
-        Path(DEFAULT_CONFIG["results_dir"])
-        / "streamlit_sessions"
-        / ticker_safe
-        / str(analysis_date)
-        / stamp
-    )
-    return write_report_tree(final_state, ticker_safe, report_dir).parent
-
 
 def _portfolio_store() -> PortfolioStore:
     return PortfolioStore(Path(DEFAULT_CONFIG["data_cache_dir"]) / "portfolio.sqlite3")
@@ -205,11 +199,28 @@ _LLM_SETTINGS_PATH = Path(DEFAULT_CONFIG["data_cache_dir"]) / "llm_settings.json
 _CUSTOM_MODEL = "Eigene Modell-ID …"
 
 
-def api_key_required(provider: str) -> str | None:
-    """Env-var name eines Pflicht-Keys, oder None wenn kein Key nötig ist."""
-    if provider in ("ollama", "bedrock", "openai_compatible"):
+def _saved_run_config() -> dict:
+    """Config from the persisted sidebar selection (used by the scheduler)."""
+    return run_config(load_llm_settings(_LLM_SETTINGS_PATH), DEFAULT_CONFIG)
+
+
+@st.cache_resource
+def _daily_scheduler() -> DailyReportScheduler | None:
+    """One scheduler thread per server process, shared by all sessions."""
+    if not reports_enabled():
         return None
-    return get_api_key_env(provider)
+    return DailyReportScheduler(_portfolio_store(), _saved_run_config).start()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _price_history(symbols: tuple[str, ...]):
+    return load_portfolio_price_history([{"symbol": symbol} for symbol in symbols])
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _news(symbol: str, provider: str, model: str, rate: bool, _prices, _config):
+    store = _portfolio_store()
+    return news_with_impact(store, symbol, _config if rate else None, _prices)
 
 
 def _model_select(label: str, provider: str, mode: str, settings: dict) -> str:
@@ -231,10 +242,75 @@ def _model_select(label: str, provider: str, mode: str, settings: dict) -> str:
     ).strip()
 
 
+def _decision_box(label: str, decision: str) -> None:
+    tone = _decision_tone(decision)
+    text = f"**{label}**  \n{decision}"
+    if tone == "buy":
+        st.success(text)
+    elif tone == "sell":
+        st.error(text)
+    else:
+        st.info(text)
+
+
+_DECISION_ICON = {"buy": "🟢", "sell": "🔴", "hold": "🟡"}
+_DIRECTION_LABEL = {"up": "↑ steigt", "down": "↓ fällt", "neutral": "→ neutral"}
+
+
+def _render_event(event) -> None:
+    if event.kind == "tool":
+        st.markdown(f"{event.title}  \n`{event.body}`" if event.body else event.title)
+    elif event.kind == "data":
+        with st.expander(event.title, expanded=False):
+            st.text(event.body)
+    elif event.kind == "report":
+        with st.expander(event.title, expanded=event.title.startswith("✅")):
+            st.markdown(event.body)
+    else:
+        with st.chat_message("assistant", avatar=event.title.split(" ", 1)[0]):
+            st.markdown(f"**{event.title.split(' ', 1)[-1]}**")
+            st.markdown(event.body)
+
+
+def _render_job(job: AnalysisJob) -> None:
+    """Show a running or finished analysis; streams while the agents work."""
+    st.markdown(f"#### {job.symbol} · {job.analysis_date}")
+    progress = st.progress(0.0)
+    status_line = st.empty()
+    feed = st.container()
+    shown = 0
+    while True:
+        running = job.running
+        events, state = job.snapshot()
+        fraction, upcoming = stage_progress(state)
+        progress.progress(fraction if running else 1.0)
+        if running:
+            status_line.caption(
+                f"⏳ Läuft seit {int(job.elapsed())} s · nächster Schritt: {upcoming} · "
+                f"{len(events)} Ereignisse"
+            )
+        with feed:
+            for event in events[shown:]:
+                _render_event(event)
+        shown = len(events)
+        if not running:
+            break
+        time.sleep(0.7)
+
+    if job.error:
+        status_line.empty()
+        st.error(f"Analyse fehlgeschlagen: {job.error}")
+        return
+    report_id, decision, report_markdown = job.result
+    status_line.caption(f"✅ Fertig nach {int(job.elapsed())} s · Bericht #{report_id} gespeichert")
+    _decision_box("Handelsentscheidung", decision)
+    with st.expander("📄 Vollständiger Bericht", expanded=False):
+        st.markdown(report_markdown)
+
+
 llm_settings = load_llm_settings(_LLM_SETTINGS_PATH)
 providers = provider_choices(DEFAULT_CONFIG)
-saved_provider = llm_settings.get("provider")
-default_provider = saved_provider if saved_provider in providers else DEFAULT_CONFIG["llm_provider"]
+default_provider = selected_provider(llm_settings, DEFAULT_CONFIG)
 
 with st.sidebar:
     st.markdown("### ⚙️ Einstellungen")
@@ -249,7 +325,12 @@ with st.sidebar:
     )
     deep_model = _model_select("Deep-Think Modell", llm_provider, "deep", llm_settings)
     quick_model = _model_select("Quick-Think Modell", llm_provider, "quick", llm_settings)
-    if llm_provider == "openai":
+    if llm_provider == "ollama_cloud":
+        st.caption(
+            "gpt-oss:120b läuft im kostenlosen Ollama-Plan (mit Nutzungslimits). "
+            "Key: https://ollama.com/settings/keys → `OLLAMA_API_KEY`."
+        )
+    elif llm_provider == "openai":
         st.caption(
             "TradingAgents benötigt Chat-Modelle. Bild-, Audio-, Embedding-, "
             "Moderations- und TTS-Modelle können keine Analyse ausführen."
@@ -257,14 +338,14 @@ with st.sidebar:
     endpoint = resolve_endpoint(llm_provider, DEFAULT_CONFIG)
     st.caption(f"Endpoint: `{displayed_endpoint(llm_provider, DEFAULT_CONFIG)}`")
 
-    required_api_env = api_key_required(llm_provider)
-    api_key_available = os.environ.get(required_api_env or "", "").strip()
-    api_key_missing = bool(required_api_env) and not api_key_available
+    required_api_env = get_api_key_env(llm_provider)
+    missing_key_env = missing_api_key(llm_provider)
+    api_key_missing = bool(missing_key_env)
     model_missing = not deep_model or not quick_model
 
     if api_key_missing:
         st.error(
-            f"API-Key fehlt: `{required_api_env}`. "
+            f"API-Key fehlt: `{missing_key_env}`. "
             "Bitte serverseitig in `.env` setzen und die Anwendung neu starten."
         )
     elif required_api_env:
@@ -272,6 +353,17 @@ with st.sidebar:
     if model_missing:
         st.warning("Bitte für beide Modelle eine Modell-ID angeben.")
 
+    st.divider()
+    st.markdown("#### 🕖 Tägliche Berichte")
+    scheduler = _daily_scheduler()
+    if scheduler is None:
+        st.caption("Deaktiviert (`TRADINGAGENTS_DAILY_REPORTS=false`).")
+    else:
+        st.caption(
+            f"Automatisch für alle Portfolio-Aktien, täglich ab "
+            f"{schedule_time().strftime('%H:%M')} ({schedule_zone().key}). "
+            f"Nächster Start: {scheduler.next_run().strftime('%d.%m. %H:%M')}"
+        )
     st.divider()
     st.caption("API-Keys und Endpoints werden zentral über die Server-`.env` bereitgestellt.")
 
@@ -289,6 +381,15 @@ if not model_missing:
         except OSError as exc:
             st.sidebar.warning(f"LLM-Auswahl konnte nicht gespeichert werden: {exc}")
 
+ui_config = {
+    **DEFAULT_CONFIG,
+    "llm_provider": llm_provider,
+    "backend_url": endpoint or None,
+    "deep_think_llm": deep_model,
+    "quick_think_llm": quick_model,
+}
+llm_ready = not api_key_missing and not model_missing
+
 _hero()
 status_chips = (
     _chip(f"🤖 {providers[llm_provider]}")
@@ -303,16 +404,29 @@ if required_api_env:
     )
 else:
     status_chips += _chip("🔑 Kein API-Key nötig", "ok")
+status_chips += _chip("🕖 Tagesberichte aktiv", "ok") if scheduler else _chip("🕖 Tagesberichte aus")
 st.markdown(status_chips, unsafe_allow_html=True)
+running_notice = st.empty()
 
 store = _portfolio_store()
-portfolio_tab, analysis_tab, reports_tab = st.tabs(
-    ["📊 Portfolio", "🔎 Analyse", "🗂️ Berichte"]
+holdings = store.list_holdings()
+held_symbols = [holding["symbol"] for holding in holdings]
+if held_symbols:
+    price_history, latest_prices, price_errors = _price_history(tuple(held_symbols))
+else:
+    price_history, latest_prices, price_errors = None, {}, {}
+latest_reports = store.latest_reports()
+
+portfolio_tab, news_tab, analysis_tab, reports_tab = st.tabs(
+    ["📊 Portfolio", "📰 Nachrichten", "🔎 Analyse", "🗂️ Berichte"]
 )
 
 with portfolio_tab:
     st.subheader("Dein Portfolio")
-    st.caption("Bestände und Analysen werden dauerhaft lokal in SQLite gespeichert.")
+    st.caption(
+        "Bestände und Analysen werden dauerhaft lokal in SQLite gespeichert. "
+        "Für jede Position entsteht automatisch jeden Tag ein neuer Bericht."
+    )
 
     with st.form("add_holding_form", clear_on_submit=True):
         st.markdown("**Position hinzufügen**")
@@ -342,18 +456,15 @@ with portfolio_tab:
                     holding_shares,
                     average_cost if average_cost > 0 else None,
                 )
+                _price_history.clear()
                 st.success(f"{holding_symbol.strip().upper()} wurde gespeichert.")
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
 
-    holdings = store.list_holdings()
     if not holdings:
         st.info("Noch keine Positionen. Füge oben ein Wertpapier hinzu.")
     else:
-        with st.spinner("Lade Kursverläufe …"):
-            price_history, latest_prices, price_errors = load_portfolio_price_history(holdings)
-
         valued_symbols = [h["symbol"] for h in holdings if h["symbol"] in latest_prices]
         total_value = sum(
             holding["shares"] * latest_prices[holding["symbol"]]
@@ -378,7 +489,7 @@ with portfolio_tab:
             f"{average_return * 100:+.2f}%" if average_return is not None else "—",
         )
 
-        if not price_history.empty:
+        if price_history is not None and not price_history.empty:
             st.markdown("**Kursentwicklung je Position**")
             st.caption("Auf 100 normiert, um unterschiedliche Aktienkurse vergleichbar zu machen.")
             st.line_chart(price_history)
@@ -398,6 +509,13 @@ with portfolio_tab:
             cost_text = (
                 f"{holding['average_cost']:,.2f}" if holding["average_cost"] else "—"
             )
+            last_report = latest_reports.get(symbol)
+            recommendation = (
+                f"{_DECISION_ICON[_decision_tone(last_report['decision'])]} "
+                f"{last_report['decision'][:20]} · {last_report['analysis_date']}"
+                if last_report
+                else "—"
+            )
 
             with _box():
                 head_col, action_col = st.columns([3.2, 1.0])
@@ -406,18 +524,20 @@ with portfolio_tab:
                         f'<span class="sym">{symbol}</span>{_return_badge(current_return)}',
                         unsafe_allow_html=True,
                     )
-                    stat_cols = st.columns(3)
+                    stat_cols = st.columns(4)
                     with stat_cols[0]:
                         _stat("Stückzahl", f"{holding['shares']:,.6g}")
                     with stat_cols[1]:
                         _stat("Kauf", cost_text)
                     with stat_cols[2]:
                         _stat("Kurs", current_price)
+                    with stat_cols[3]:
+                        _stat("KI-Empfehlung", recommendation)
                 with action_col:
                     if st.button(
-                        "🔎 Analysieren",
+                        "🔎 Jetzt analysieren",
                         key=f"analyze_{symbol}",
-                        disabled=api_key_missing or model_missing,
+                        disabled=not llm_ready,
                         type="primary",
                         use_container_width=True,
                     ):
@@ -430,16 +550,90 @@ with portfolio_tab:
                         use_container_width=True,
                     ):
                         store.remove_holding(symbol)
+                        _price_history.clear()
                         st.rerun()
 
-with analysis_tab:
-    st.subheader("KI-Analyse starten")
+with news_tab:
+    st.subheader("Nachrichten zu deinen Aktien")
     st.caption(
-        "Multi-Agenten-Analyse mit Analysten, Research-Debatte, Trader und Risikomanagement."
+        "Aktuelle Meldungen von Yahoo Finance. Die KI schätzt je Meldung, ob der Kurs eher "
+        "steigt oder fällt; daneben steht, wie sich die Aktie seit der Meldung tatsächlich "
+        "entwickelt hat. Bewertungen werden gespeichert und nicht erneut berechnet."
+    )
+    if not held_symbols:
+        st.info("Füge im Portfolio Positionen hinzu, um hier Nachrichten zu sehen.")
+    else:
+        if not llm_ready:
+            st.warning("Ohne API-Key/Modell werden die Meldungen ohne KI-Einschätzung angezeigt.")
+        if st.button("🔄 Nachrichten aktualisieren", key="refresh_news"):
+            _news.clear()
+        for symbol in held_symbols:
+            prices = (
+                price_history[symbol]
+                if price_history is not None and symbol in getattr(price_history, "columns", [])
+                else None
+            )
+            with st.spinner(f"Lade Nachrichten für {symbol} …"):
+                try:
+                    articles, rating_error = _news(
+                        symbol, llm_provider, quick_model, llm_ready, prices, ui_config
+                    )
+                except Exception as exc:
+                    st.warning(f"{symbol}: Nachrichten konnten nicht geladen werden ({exc})")
+                    continue
+            ups = sum(1 for a in articles if (a["rating"] or {}).get("direction") == "up")
+            downs = sum(1 for a in articles if (a["rating"] or {}).get("direction") == "down")
+            with _box():
+                st.markdown(
+                    f'<span class="sym">{symbol}</span>'
+                    f'<span class="badge badge-up">↑ {ups}</span>'
+                    f'<span class="badge badge-down">↓ {downs}</span>',
+                    unsafe_allow_html=True,
+                )
+                if rating_error:
+                    st.caption(f"KI-Bewertung fehlgeschlagen: {rating_error}")
+                if not articles:
+                    st.caption("Keine aktuellen Meldungen gefunden.")
+                    continue
+                rows = []
+                for article in articles:
+                    rating = article["rating"] or {}
+                    rows.append({
+                        "Datum": article["pub_date"].strftime("%d.%m.%Y %H:%M")
+                        if article["pub_date"] else "—",
+                        "Meldung": article["title"],
+                        "Link": article["link"] or None,
+                        "Quelle": article["publisher"],
+                        "KI-Einschätzung": _DIRECTION_LABEL.get(rating.get("direction"), "—"),
+                        "Sicherheit": rating.get("confidence"),
+                        "Begründung": rating.get("reason", ""),
+                        "Kurs seit Meldung": (
+                            article["reaction"] * 100 if article["reaction"] is not None else None
+                        ),
+                    })
+                st.dataframe(
+                    rows,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Link": st.column_config.LinkColumn("Link", display_text="öffnen"),
+                        "Sicherheit": st.column_config.ProgressColumn(
+                            "Sicherheit", min_value=0, max_value=100, format="%d%%"
+                        ),
+                        "Kurs seit Meldung": st.column_config.NumberColumn(
+                            "Kurs seit Meldung", format="%+.2f%%"
+                        ),
+                    },
+                )
+
+with analysis_tab:
+    st.subheader("KI-Analyse")
+    st.caption(
+        "Multi-Agenten-Analyse mit Analysten, Research-Debatte, Trader und Risikomanagement. "
+        "Was die Agenten denken, erscheint live, während sie arbeiten. Der Bericht wird "
+        "automatisch gespeichert, auch wenn du die Seite verlässt."
     )
 
-    holdings = store.list_holdings()
-    held_symbols = [holding["symbol"] for holding in holdings]
     default_symbol = st.session_state.get("analysis_ticker", held_symbols[0] if held_symbols else "NVDA")
     if held_symbols:
         ticker = st.selectbox(
@@ -455,88 +649,90 @@ with analysis_tab:
         key="analysis_date",
     )
 
+    job: AnalysisJob | None = st.session_state.get("analysis_job")
+    job_running = job is not None and job.running
     requested_analysis = st.button(
         "Analyse starten",
         type="primary",
-        disabled=not ticker.strip() or api_key_missing or model_missing,
+        disabled=not ticker.strip() or not llm_ready or job_running,
         key="start_analysis",
     )
     run_portfolio_analysis = st.session_state.pop("run_portfolio_analysis", False)
-    if requested_analysis or run_portfolio_analysis:
-        ticker = ticker.strip().upper()
-        result_q: queue.Queue = queue.Queue()
-
-        def run_analysis():
-            try:
-                config = DEFAULT_CONFIG.copy()
-                config["llm_provider"] = llm_provider
-                config["backend_url"] = endpoint or None
-                config["deep_think_llm"] = deep_model
-                config["quick_think_llm"] = quick_model
-                ta = TradingAgentsGraph(debug=False, config=config)
-                final_state, decision = ta.propagate(ticker, str(analysis_date))
-                result_q.put(("ok", decision, final_state))
-            except Exception as exc:
-                result_q.put(("error", str(exc)))
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-        with st.spinner(f"Analysiere {ticker} für {analysis_date} …"):
-            thread.join(timeout=300)
-
-        if not result_q.empty():
-            kind, *payload = result_q.get()
-            if kind == "ok":
-                decision, final_state = payload
-                try:
-                    report_dir = _save_analysis_report(final_state, ticker, analysis_date)
-                    report_markdown = (report_dir / "complete_report.md").read_text(encoding="utf-8")
-                    report_id = store.save_report(
-                        ticker, str(analysis_date), str(decision), report_markdown
-                    )
-                except Exception as exc:
-                    st.error(f"Analyse abgeschlossen, der Bericht konnte nicht gespeichert werden: {exc}")
-                else:
-                    st.success(f"Analyse abgeschlossen und dauerhaft gespeichert (Bericht #{report_id}).")
-                    tone = _decision_tone(str(decision))
-                    if tone == "buy":
-                        st.success(f"**Handelsentscheidung**  \n{decision}")
-                    elif tone == "sell":
-                        st.error(f"**Handelsentscheidung**  \n{decision}")
-                    else:
-                        st.info(f"**Handelsentscheidung**  \n{decision}")
-                    with _box():
-                        st.markdown(report_markdown)
-            else:
-                st.error(f"Fehler: {payload[0]}")
-        else:
-            st.error("Zeitüberschreitung (5 min). Bitte erneut versuchen.")
+    if (requested_analysis or run_portfolio_analysis) and not job_running:
+        job_symbol = (
+            st.session_state.get("analysis_ticker", ticker) if run_portfolio_analysis else ticker
+        )
+        job = AnalysisJob(store, job_symbol.strip().upper(), str(analysis_date), ui_config)
+        st.session_state["analysis_job"] = job
+    # Filled at the end of the script, so streaming never blocks the other tabs.
+    job_area = st.container()
 
 with reports_tab:
-    st.subheader("Gespeicherte Analyseberichte")
+    st.subheader("Analyseberichte")
+
+    if latest_reports:
+        st.markdown("**Letzte Empfehlung je Aktie**")
+        st.dataframe(
+            [
+                {
+                    "Aktie": report["symbol"],
+                    "Signal": _DECISION_ICON[_decision_tone(report["decision"])],
+                    "Entscheidung": report["decision"],
+                    "Analyse-Datum": report["analysis_date"],
+                    "Erstellt": report["created_at"][:16].replace("T", " "),
+                }
+                for report in sorted(latest_reports.values(), key=lambda r: r["symbol"])
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    daily_runs = store.list_daily_runs(limit=30)
+    with st.expander(f"🕖 Automatische Tagesläufe ({len(daily_runs)})", expanded=False):
+        if scheduler is not None:
+            st.caption(f"Nächster Start: {scheduler.next_run().strftime('%d.%m.%Y %H:%M')}")
+        if not daily_runs:
+            st.caption("Noch keine automatischen Läufe.")
+        else:
+            status_label = {"done": "✅ fertig", "running": "⏳ läuft", "error": "❌ Fehler"}
+            st.dataframe(
+                [
+                    {
+                        "Aktie": run["symbol"],
+                        "Analyse-Datum": run["analysis_date"],
+                        "Status": status_label.get(run["status"], run["status"]),
+                        "Versuche": run["attempts"],
+                        "Bericht": f"#{run['report_id']}" if run["report_id"] else "",
+                        "Fehler": run["error"] or "",
+                        "Aktualisiert": run["updated_at"][:16].replace("T", " "),
+                    }
+                    for run in daily_runs
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+
     reports = store.list_reports()
     if not reports:
         st.info("Nach der ersten Analyse erscheinen die Berichte hier dauerhaft.")
     else:
+        report_symbols = sorted({report["symbol"] for report in reports})
+        symbol_filter = st.selectbox("Aktie", ["Alle", *report_symbols], key="report_symbol_filter")
+        filtered = [r for r in reports if symbol_filter == "Alle" or r["symbol"] == symbol_filter]
         selected_report = st.selectbox(
             "Bericht auswählen",
-            reports,
+            filtered,
             format_func=lambda report: (
-                f"#{report['id']} · {report['symbol']} · {report['analysis_date']} "
-                f"· {report['created_at'][:19].replace('T', ' ')}"
+                f"{_DECISION_ICON[_decision_tone(report['decision'])]} #{report['id']} · "
+                f"{report['symbol']} · {report['analysis_date']} "
+                f"· {report['created_at'][:16].replace('T', ' ')}"
             ),
         )
         full_report = store.get_report(selected_report["id"])
         if full_report is None:
             st.error("Der ausgewählte Bericht ist nicht mehr verfügbar.")
         else:
-            tone = _decision_tone(full_report["decision"])
-            if tone == "buy":
-                st.success(f"**Entscheidung:** {full_report['decision']}")
-            elif tone == "sell":
-                st.error(f"**Entscheidung:** {full_report['decision']}")
-            else:
-                st.info(f"**Entscheidung:** {full_report['decision']}")
+            _decision_box("Entscheidung", full_report["decision"])
 
             download_col, _ = st.columns([1, 3])
             with download_col:
@@ -553,9 +749,20 @@ with reports_tab:
             with _box():
                 st.markdown(full_report["report_markdown"])
 
+if job is not None and job.running:
+    running_notice.info(
+        f"⏳ Analyse von **{job.symbol}** läuft — die Agenten-Gedanken erscheinen live "
+        "im Tab „🔎 Analyse“."
+    )
+
 st.divider()
 st.markdown(
     '<div class="footer">⚠️ Nur zu Forschungszwecken — keine Anlageberatung. '
-    "Kursdaten: Yahoo Finance.</div>",
+    "Kurs- und Nachrichtendaten: Yahoo Finance.</div>",
     unsafe_allow_html=True,
 )
+
+if job is not None:
+    with job_area:
+        _render_job(job)
+    running_notice.empty()

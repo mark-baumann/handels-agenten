@@ -1,9 +1,6 @@
 """Report parity: the shared writer produces the report tree for the CLI and the
 programmatic API alike (#1037)."""
 
-import importlib.util
-from datetime import date
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -54,20 +51,25 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
 
 
 @pytest.mark.unit
-def test_streamlit_save_analysis_report_persists_session_log(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRADINGAGENTS_RESULTS_DIR", str(tmp_path))
+def test_dashboard_analysis_persists_report_tree_and_db(tmp_path, monkeypatch):
+    import tradingagents.graph.trading_graph as trading_graph
+    from tradingagents.daily_reports import run_and_store_analysis
+    from tradingagents.portfolio import PortfolioStore
 
-    app_path = Path(__file__).parents[1] / "app" / "streamlit_app.py"
-    spec = importlib.util.spec_from_file_location("handels_agenten_streamlit_app", app_path)
-    streamlit_app = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(streamlit_app)
+    class FakeGraph:
+        def __init__(self, debug, config):
+            pass
 
-    monkeypatch.setitem(streamlit_app.DEFAULT_CONFIG, "results_dir", str(tmp_path))
+        def propagate(self, symbol, day, on_chunk=None):
+            return _state(), "Buy"
 
-    out_dir = streamlit_app._save_analysis_report(_state(), "nvda", date(2026, 10, 2))
+    monkeypatch.setattr(trading_graph, "TradingAgentsGraph", FakeGraph)
+    store = PortfolioStore(tmp_path / "portfolio.sqlite3")
+    report_id, decision, markdown = run_and_store_analysis(
+        store, "nvda", "2026-10-02", {"results_dir": str(tmp_path)}
+    )
 
-    assert out_dir.exists()
-    assert out_dir.parent.name == "2026-10-02"
-    assert out_dir.parent.parent.name == "NVDA"
-    assert out_dir.parent.parent.parent.name == "streamlit_sessions"
-    assert (out_dir / "complete_report.md").exists()
+    out_dir = next((tmp_path / "streamlit_sessions" / "NVDA" / "2026-10-02").iterdir())
+    assert (out_dir / "complete_report.md").read_text(encoding="utf-8") == markdown
+    assert decision == "Buy"
+    assert store.get_report(report_id)["symbol"] == "NVDA"

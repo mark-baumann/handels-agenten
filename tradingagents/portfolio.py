@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,33 @@ class PortfolioStore:
                     decision TEXT NOT NULL,
                     report_markdown TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+            # One row per scheduled (symbol, analysis_date) run; doubles as a
+            # claim so a restart or a second process never runs it twice.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_runs (
+                    symbol TEXT NOT NULL,
+                    analysis_date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    report_id INTEGER,
+                    error TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (symbol, analysis_date)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS news_impact (
+                    symbol TEXT NOT NULL,
+                    article_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (symbol, article_key)
                 )
                 """
             )
@@ -136,6 +164,133 @@ class PortfolioStore:
                 (report_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def latest_reports(self) -> dict[str, dict]:
+        """Newest report per symbol (without the markdown body)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, symbol, analysis_date, decision, created_at FROM reports r
+                WHERE id = (
+                    SELECT id FROM reports WHERE symbol = r.symbol
+                    ORDER BY analysis_date DESC, created_at DESC, id DESC LIMIT 1
+                )
+                """
+            ).fetchall()
+        return {row["symbol"]: dict(row) for row in rows}
+
+    def has_report(self, symbol: str, analysis_date: str) -> bool:
+        canonical = self._symbol(symbol)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM reports WHERE symbol = ? AND analysis_date = ? LIMIT 1",
+                (canonical, analysis_date),
+            ).fetchone()
+        return row is not None
+
+    # --- Scheduled daily runs ---------------------------------------------
+
+    def claim_daily_run(
+        self,
+        symbol: str,
+        analysis_date: str,
+        max_attempts: int = 3,
+        retry_after: timedelta = timedelta(minutes=30),
+        stale_after: timedelta = timedelta(hours=2),
+    ) -> bool:
+        """Atomically mark a daily run as started; False if it must not run now.
+
+        A run is claimable when it never ran, failed fewer than ``max_attempts``
+        times and the last failure is older than ``retry_after``, or when a
+        "running" claim is older than ``stale_after`` (crashed process).
+        """
+        canonical = self._symbol(symbol)
+        now = datetime.now(timezone.utc)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, attempts, updated_at FROM daily_runs "
+                "WHERE symbol = ? AND analysis_date = ?",
+                (canonical, analysis_date),
+            ).fetchone()
+            if row is not None:
+                age = now - datetime.fromisoformat(row["updated_at"])
+                claimable = (
+                    (row["status"] == "error" and row["attempts"] < max_attempts and age >= retry_after)
+                    or (row["status"] == "running" and age >= stale_after)
+                )
+                if not claimable:
+                    connection.rollback()
+                    return False
+            connection.execute(
+                """
+                INSERT INTO daily_runs (symbol, analysis_date, status, attempts, updated_at)
+                VALUES (?, ?, 'running', 1, ?)
+                ON CONFLICT(symbol, analysis_date) DO UPDATE SET
+                    status = 'running', attempts = attempts + 1, error = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (canonical, analysis_date, now.isoformat()),
+            )
+            connection.commit()
+            return True
+        finally:
+            connection.close()
+
+    def finish_daily_run(
+        self, symbol: str, analysis_date: str, report_id: int | None = None, error: str | None = None
+    ) -> None:
+        canonical = self._symbol(symbol)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE daily_runs SET status = ?, report_id = ?, error = ?, updated_at = ?
+                WHERE symbol = ? AND analysis_date = ?
+                """,
+                (
+                    "error" if error else "done",
+                    report_id,
+                    error,
+                    datetime.now(timezone.utc).isoformat(),
+                    canonical,
+                    analysis_date,
+                ),
+            )
+
+    def list_daily_runs(self, limit: int = 50) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT symbol, analysis_date, status, attempts, report_id, error, updated_at
+                FROM daily_runs ORDER BY updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    # --- News impact cache ------------------------------------------------
+
+    def get_news_impacts(self, symbol: str) -> dict[str, dict]:
+        canonical = self._symbol(symbol)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT article_key, payload FROM news_impact WHERE symbol = ?", (canonical,)
+            ).fetchall()
+        return {row["article_key"]: json.loads(row["payload"]) for row in rows}
+
+    def save_news_impacts(self, symbol: str, impacts: dict[str, dict]) -> None:
+        canonical = self._symbol(symbol)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO news_impact (symbol, article_key, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol, article_key) DO UPDATE SET payload = excluded.payload
+                """,
+                [(canonical, key, json.dumps(value), now) for key, value in impacts.items()],
+            )
 
 
 def load_portfolio_price_history(

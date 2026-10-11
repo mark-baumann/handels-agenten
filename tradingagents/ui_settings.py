@@ -1,7 +1,7 @@
 """LLM selection for the Streamlit dashboard.
 
-The dashboard lets the user switch between a small set of providers (OpenAI
-and Ollama) and pick the models per provider. The choice is persisted as JSON
+The dashboard lets the user switch between a small set of providers (Ollama
+Cloud and OpenAI) and pick the models per provider. The choice is persisted as JSON
 next to the portfolio database so it survives restarts and redeployments.
 
 Credentials and endpoints are deliberately *not* part of these settings: they
@@ -18,12 +18,15 @@ from pathlib import Path
 from tradingagents.default_config import _PROVIDER_DEFAULT_MODELS
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
 
-# Providers offered in the dashboard, in display order.
+# Providers offered in the dashboard, in display order. Ollama Cloud with
+# gpt-oss:120b is the default: it runs on Ollama's free plan.
 UI_PROVIDERS: dict[str, str] = {
+    "ollama_cloud": "Ollama Cloud (kostenlos)",
     "openai":       "OpenAI (ChatGPT)",
-    "ollama_cloud": "Ollama Cloud",
-    "ollama":       "Ollama (eigener Server)",
 }
+UI_DEFAULT_PROVIDER = "ollama_cloud"
+# A self-hosted Ollama server is not offered in the dashboard.
+_HIDDEN_PROVIDERS = {"ollama"}
 
 _OPENAI_DEFAULT_MODELS = {"deep_think_llm": "gpt-5.5", "quick_think_llm": "gpt-5.4-mini"}
 _MODE_KEYS = {"deep": "deep_think_llm", "quick": "quick_think_llm"}
@@ -33,9 +36,16 @@ def provider_choices(config: dict) -> dict[str, str]:
     """Selectable providers; the env-configured one is always included."""
     choices = dict(UI_PROVIDERS)
     configured = str(config.get("llm_provider") or "").lower()
-    if configured and configured not in choices:
+    if configured and configured not in choices and configured not in _HIDDEN_PROVIDERS:
         choices[configured] = configured
     return choices
+
+
+def selected_provider(settings: dict, config: dict) -> str:
+    """Saved provider if still offered, else the dashboard default."""
+    providers = provider_choices(config)
+    saved = settings.get("provider")
+    return saved if saved in providers else UI_DEFAULT_PROVIDER
 
 
 def default_model(provider: str, mode: str, config: dict) -> str:
@@ -75,8 +85,6 @@ def displayed_endpoint(provider: str, config: dict) -> str:
     endpoint = resolve_endpoint(provider, config)
     if endpoint:
         return endpoint
-    if provider == "ollama":
-        return os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
     if provider == "ollama_cloud":
         return "https://ollama.com/v1"
     return "Provider-Standard"
@@ -107,3 +115,18 @@ def stored_model(settings: dict, provider: str, mode: str) -> str | None:
         return None
     value = (models.get(provider) or {}).get(mode) if isinstance(models.get(provider), dict) else None
     return value if isinstance(value, str) and value.strip() else None
+
+
+def run_config(settings: dict, config: dict) -> dict:
+    """Copy of ``config`` with the saved provider/models applied.
+
+    Shared by the dashboard and the daily report scheduler, so the scheduled
+    runs always use what is selected in the sidebar.
+    """
+    provider = selected_provider(settings, config)
+    run = dict(config)
+    run["llm_provider"] = provider
+    run["backend_url"] = resolve_endpoint(provider, config)
+    for mode, key in _MODE_KEYS.items():
+        run[key] = stored_model(settings, provider, mode) or default_model(provider, mode, config)
+    return run
