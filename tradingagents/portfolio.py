@@ -180,13 +180,21 @@ class PortfolioStore:
         return {row["symbol"]: dict(row) for row in rows}
 
     def has_report(self, symbol: str, analysis_date: str) -> bool:
+        return self.find_report(symbol, analysis_date) is not None
+
+    def find_report(self, symbol: str, analysis_date: str) -> dict | None:
+        """Newest full report for ``symbol`` on ``analysis_date``, if any."""
         canonical = self._symbol(symbol)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM reports WHERE symbol = ? AND analysis_date = ? LIMIT 1",
+                """
+                SELECT id, symbol, analysis_date, decision, report_markdown, created_at
+                FROM reports WHERE symbol = ? AND analysis_date = ?
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
                 (canonical, analysis_date),
             ).fetchone()
-        return row is not None
+        return dict(row) if row else None
 
     # --- Scheduled daily runs ---------------------------------------------
 
