@@ -122,10 +122,9 @@ cp .env.example .env  # add your API keys
 docker compose run --rm tradingagents
 ```
 
-For local models with Ollama:
-```bash
-docker compose --profile ollama run --rm tradingagents-ollama
-```
+The dashboard uses Ollama Cloud with `gpt-oss:120b` by default (free plan,
+set `OLLAMA_API_KEY`) and creates a report for every portfolio holding once a
+day (`TRADINGAGENTS_DAILY_REPORT_TIME`, default 07:00 Europe/Berlin).
 
 ### Required APIs
 

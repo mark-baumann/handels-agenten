@@ -31,7 +31,7 @@ _ENV_OVERRIDES = {
 # Default models for providers that cannot serve the OpenAI default ids.
 _PROVIDER_DEFAULT_MODELS = {
     "ollama":       {"deep_think_llm": "gpt-oss:120b", "quick_think_llm": "gpt-oss:20b"},
-    "ollama_cloud": {"deep_think_llm": "gpt-oss:120b", "quick_think_llm": "gpt-oss:20b"},
+    "ollama_cloud": {"deep_think_llm": "gpt-oss:120b", "quick_think_llm": "gpt-oss:120b"},
 }
 
 
