@@ -13,3 +13,8 @@ results
 eval_results
 Dockerfile
 docker-compose.yml
+tests
+assets
+.github
+.pytest_cache
+.ruff_cache
