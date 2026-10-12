@@ -125,51 +125,166 @@ def _format_articles(articles: list[dict], header: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# Listing pages that Google News indexes as "news" for a ticker: option
+# contract quote pages (``AAPL261012P00337500``) and generic quote/key-figure
+# pages. They carry no information and crowd out real articles.
+_NOISE_RES = (
+    re.compile(r"\b[A-Z]{1,6}\d{6}[CP]\d{8}\b"),
+    re.compile(r"\b(call|put)\s*\(", re.IGNORECASE),
+    re.compile(
+        r"Aktienkurs, Nachrichten, Kurs und Verlauf|Kursverlauf und Daten|Aktuelle Kennzahlen"
+        r"|Stock Price, News, Quote|Stock Price Today|Kurs Xetra",
+        re.IGNORECASE,
+    ),
+)
+
+# Exchanges whose coverage is mostly German-language.
+_GERMAN_SUFFIXES = (".DE", ".F", ".SG", ".MU", ".DU", ".HM", ".BE", ".HA", ".VI")
+
+# Legal-form suffixes dropped from company names to get a searchable brand.
+_LEGAL_SUFFIX_RE = re.compile(
+    r"(,?\s+(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|ag|se|sa|nv|"
+    r"n\.v|s\.a|holdings?|group|class [a-c])\.?)+$",
+    re.IGNORECASE,
+)
+
+
+def _is_noise(title: str) -> bool:
+    return any(pattern.search(title) for pattern in _NOISE_RES)
+
+
+def _locale(symbol: str) -> tuple[str, str, str]:
+    """(lang, region, stock word) for the market a symbol trades on."""
+    if symbol.upper().endswith(_GERMAN_SUFFIXES):
+        return "de", "DE", "Aktie"
+    return "en-US", "US", "stock"
+
+
+def _company_name(symbol: str) -> str | None:
+    """Short, searchable company name (``Apple Inc.`` → ``Apple``), if known."""
+    try:
+        from tradingagents.agents.utils.agent_utils import resolve_instrument_identity
+
+        name = resolve_instrument_identity(symbol).get("company_name")
+    except Exception:  # noqa: BLE001 — identity is best effort
+        return None
+    if not name:
+        return None
+    short = _LEGAL_SUFFIX_RE.sub("", name.strip()).strip(" ,.")
+    return short or None
+
+
+def _date_filter(start_dt: datetime, end_dt: datetime) -> str:
+    """Google search operators for the window; ``before:`` is exclusive."""
+    return (
+        f"after:{start_dt.strftime('%Y-%m-%d')} "
+        f"before:{(end_dt + timedelta(days=1)).strftime('%Y-%m-%d')}"
+    )
+
+
+def ticker_news_articles(
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    limit: int = 20,
+) -> list[dict]:
+    """Relevant, de-noised headlines about ``ticker`` within the window.
+
+    Searches by company name (plus "stock"/"Aktie") in the market's language
+    instead of the bare ticker, which mostly returns option quote pages. Falls
+    back to the ticker when no name is known or the name search finds nothing.
+    """
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    window = _date_filter(start_dt, end_dt)
+
+    base = crypto_base(ticker)
+    symbol = normalize_symbol(ticker)
+    if base:
+        queries = [f"{base} crypto {window}"]
+        lang, region = "en-US", "US"
+    else:
+        lang, region, word = _locale(symbol)
+        name = _company_name(symbol)
+        plain = symbol.split(".")[0]
+        queries = [f'"{name}" {word} {window}'] if name else []
+        queries.append(f"{plain} {word} {window}")
+
+    for query in queries:
+        articles = [
+            a for a in _fetch_rss(query, lang, region, timeout=10.0)
+            if not _is_noise(a["title"]) and _in_window(a["pub_date"], start_dt, end_dt)
+        ]
+        if articles:
+            articles.sort(key=lambda a: a["pub_date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+            return articles[:limit]
+    return []
+
+
 def get_news_google(
     ticker: str,
     start_date: str,
     end_date: str,
-    lang: str = "de",
-    region: str = "DE",
     limit: int = 20,
 ) -> str:
     """Retrieve recent Google News headlines for ``ticker``.
 
     Args:
-        ticker: Ticker symbol (e.g. "AAPL", "BTC-USD").
+        ticker: Ticker symbol (e.g. "AAPL", "SAP.DE", "BTC-USD").
         start_date: Start date in yyyy-mm-dd format.
         end_date: End date in yyyy-mm-dd format.
-        lang: Google News language code (default "de").
-        region: Google News region code (default "DE").
         limit: Maximum number of articles to return.
 
     Returns:
         Formatted string containing news headlines, or a placeholder on failure.
     """
-    # Crypto reaches us as a Yahoo pair (BTC-USD); search for the base so the
-    # query matches headlines instead of near-nothing.
-    query = crypto_base(ticker) or normalize_symbol(ticker)
-    articles = _fetch_rss(query, lang, region, timeout=10.0)
-
+    articles = ticker_news_articles(ticker, start_date, end_date, limit)
     if not articles:
-        return f"No news found for {ticker}"
-
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    filtered = [a for a in articles if _in_window(a["pub_date"], start_dt, end_dt)][:limit]
-
-    if not filtered:
         return f"No news found for {ticker} between {start_date} and {end_date}"
+    return _format_articles(articles, f"## {ticker} News (Google News), from {start_date} to {end_date}:")
 
-    return _format_articles(filtered, f"## {ticker} News (Google News), from {start_date} to {end_date}:")
+
+def global_news_articles(curr_date: str, look_back_days: int = 7, limit: int = 10) -> list[dict]:
+    """Macro headlines for the configured ``global_news_queries`` topics.
+
+    One date-restricted search per topic (fetched in parallel), merged and
+    de-duplicated, newest first, spread across topics.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .config import get_config
+
+    curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+    start_dt = curr_dt - timedelta(days=look_back_days)
+    window = _date_filter(start_dt, curr_dt)
+    topics = get_config().get("global_news_queries") or ["stock market economy"]
+
+    def fetch(topic: str) -> list[dict]:
+        return [
+            a for a in _fetch_rss(f"{topic} {window}", "en-US", "US", timeout=10.0)
+            if _in_window(a["pub_date"], start_dt, curr_dt)
+        ]
+
+    with ThreadPoolExecutor(max_workers=min(5, len(topics))) as pool:
+        per_topic = list(pool.map(fetch, topics))
+
+    # Round-robin over topics so one busy topic cannot crowd out the others.
+    merged, seen = [], set()
+    for rank in range(max((len(t) for t in per_topic), default=0)):
+        for articles in per_topic:
+            if rank < len(articles):
+                article = articles[rank]
+                key = article["title"].lower()
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(article)
+    return merged[:limit]
 
 
 def get_global_news_google(
     curr_date: str,
     look_back_days: int = 7,
     limit: int = 10,
-    lang: str = "de",
-    region: str = "DE",
 ) -> str:
     """Retrieve global/macro economic headlines from Google News.
 
@@ -177,26 +292,14 @@ def get_global_news_google(
         curr_date: Current date in yyyy-mm-dd format.
         look_back_days: Number of days to look back.
         limit: Maximum number of articles to return.
-        lang: Google News language code (default "de").
-        region: Google News region code (default "DE").
 
     Returns:
         Formatted string containing global headlines, or a placeholder on failure.
     """
-    query = "Finanzmärkte Wirtschaft Zentralbanken"
-    articles = _fetch_rss(query, lang, region, timeout=10.0)
-
+    articles = global_news_articles(curr_date, look_back_days, limit)
+    start = (datetime.strptime(curr_date, "%Y-%m-%d") - timedelta(days=look_back_days)).strftime("%Y-%m-%d")
     if not articles:
-        return f"No global news found for {curr_date}"
-
-    curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
-    start_dt = curr_dt - timedelta(days=look_back_days)
-    filtered = [a for a in articles if _in_window(a["pub_date"], start_dt, curr_dt)][:limit]
-
-    if not filtered:
-        return f"No global news found between {start_dt.strftime('%Y-%m-%d')} and {curr_date}"
-
+        return f"No global news found between {start} and {curr_date}"
     return _format_articles(
-        filtered,
-        f"## Global Market News (Google News), from {start_dt.strftime('%Y-%m-%d')} to {curr_date}:",
+        articles, f"## Global Market News (Google News), from {start} to {curr_date}:"
     )

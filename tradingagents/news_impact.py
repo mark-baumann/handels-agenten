@@ -12,11 +12,12 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import yfinance as yf
 
+from tradingagents.dataflows.google_news import ticker_news_articles
 from tradingagents.dataflows.yfinance_news import _extract_article_data
 from tradingagents.portfolio import PortfolioStore
 
@@ -30,19 +31,44 @@ def article_key(article: dict) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def fetch_news(symbol: str, limit: int = 10) -> list[dict]:
-    """Latest Yahoo Finance articles for ``symbol``, newest first."""
+def fetch_news(symbol: str, limit: int = 10, days: int = 7) -> list[dict]:
+    """Latest articles for ``symbol``, newest first.
+
+    Uses the same Google News search the News Analyst gets via ``get_news``,
+    so the dashboard shows exactly what the agents read; Yahoo Finance is the
+    fallback when that search returns nothing.
+    """
+    today = date.today()
+    try:
+        found = ticker_news_articles(
+            symbol, (today - timedelta(days=days)).isoformat(), today.isoformat(), limit
+        )
+    except Exception as exc:
+        logger.warning("Google News for %s failed: %s", symbol, exc)
+        found = []
+    articles = [
+        {"title": a["title"], "summary": "", "publisher": a["source"], "link": a["link"],
+         "pub_date": a["pub_date"]}
+        for a in found
+    ]
+    if not articles:
+        articles = _yahoo_news(symbol, limit)
+    for article in articles:
+        article["key"] = article_key(article)
+    articles.sort(
+        key=lambda a: a["pub_date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True
+    )
+    return articles[:limit]
+
+
+def _yahoo_news(symbol: str, limit: int) -> list[dict]:
     articles = []
     for raw in (yf.Ticker(symbol).news or [])[: limit * 2]:
         data = _extract_article_data(raw)
         if not data.get("title") or data["title"] == "No title":
             continue
-        data["key"] = article_key(data)
         articles.append(data)
-    articles.sort(
-        key=lambda a: a["pub_date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True
-    )
-    return articles[:limit]
+    return articles
 
 
 def _prompt(symbol: str, articles: list[dict]) -> str:
