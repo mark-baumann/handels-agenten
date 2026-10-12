@@ -1,4 +1,5 @@
 """Handels-Agenten — Streamlit Web-UI"""
+import html
 import inspect
 import threading
 import time
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 # Exported server variables take precedence over the file.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+from tradingagents.agent_voices import escape_markdown, parse_voices  # noqa: E402
 from tradingagents.daily_reports import (  # noqa: E402
     DailyReportScheduler,
     missing_api_key,
@@ -49,7 +51,9 @@ from tradingagents.ui_settings import (  # noqa: E402
     stored_model,
 )
 
-st.set_page_config(page_title="Handels-Agenten", page_icon="📈", layout="wide")
+st.set_page_config(
+    page_title="Handels-Agenten", page_icon="📈", layout="wide", initial_sidebar_state="collapsed"
+)
 
 # === Theme & Styling ========================================================
 
@@ -80,13 +84,13 @@ _CSS = """
     .hero {
         background: linear-gradient(135deg, #4f46e5 0%, #6d28d9 55%, #2563eb 100%);
         border-radius: 16px;
-        padding: 22px 26px;
+        padding: 14px 22px;
         margin-bottom: 4px;
         box-shadow: 0 4px 16px rgba(79, 70, 229, 0.28);
     }
     .hero-title {
         color: #ffffff;
-        font-size: 1.9rem;
+        font-size: 1.5rem;
         font-weight: 800;
         letter-spacing: -0.01em;
         line-height: 1.15;
@@ -131,6 +135,23 @@ _CSS = """
         font-weight: 600;
     }
     .stat-value { font-size: 1.02rem; font-weight: 650; color: @@text@@; }
+    .voice-head { font-size: 1.0rem; color: @@text@@; margin-bottom: 2px; }
+    .voice-role {
+        margin-left: 8px; font-size: 0.75rem; color: @@muted@@;
+        text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .verdict {
+        border-radius: 14px; padding: 16px 20px; margin: 8px 0 14px;
+        border: 1px solid @@card_border@@; background: @@chip_bg@@;
+    }
+    .verdict-buy { background: @@up_soft@@; border-color: transparent; }
+    .verdict-sell { background: @@down_soft@@; border-color: transparent; }
+    .verdict-label {
+        font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em;
+        color: @@muted@@; font-weight: 600;
+    }
+    .verdict-value { font-size: 1.6rem; font-weight: 800; color: @@text@@; margin: 2px 0 6px; }
+    .verdict-text { color: @@text@@; font-size: 0.95rem; }
     .footer { text-align: center; color: @@muted@@; font-size: 0.78rem; padding: 4px 0 12px; }
 </style>
 """
@@ -158,7 +179,7 @@ def _hero() -> None:
         """
         <div class="hero">
             <div class="hero-title">📈 Handels-Agenten</div>
-            <div class="hero-sub">Dein Portfolio und KI-gestützte Aktienanalysen</div>
+            <div class="hero-sub">Du gegen ein Team aus KI-Trading-Agenten</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -287,17 +308,6 @@ def _model_select(label: str, provider: str, mode: str, settings: dict) -> str:
     ).strip()
 
 
-def _decision_box(label: str, decision: str) -> None:
-    tone = _decision_tone(decision)
-    text = f"**{label}**  \n{decision}"
-    if tone == "buy":
-        st.success(text)
-    elif tone == "sell":
-        st.error(text)
-    else:
-        st.info(text)
-
-
 _DECISION_ICON = {"buy": "🟢", "sell": "🔴", "hold": "🟡"}
 _DIRECTION_LABEL = {"up": "↑ steigt", "down": "↓ fällt", "neutral": "→ neutral"}
 
@@ -319,7 +329,19 @@ def _render_event(event) -> None:
 
 def _render_job(job: AnalysisJob) -> None:
     """Show a running or finished analysis; streams while the agents work."""
-    st.markdown(f"#### {job.symbol} · {job.analysis_date}")
+    if not job.running:
+        # Finished: keep the live log out of the way, collapsed.
+        events, _ = job.snapshot()
+        if job.error:
+            st.error(f"Analyse von {job.symbol} fehlgeschlagen: {job.error}")
+        else:
+            st.success(f"✅ Analyse von {job.symbol} ({job.analysis_date}) fertig nach "
+                       f"{int(job.elapsed())} s.")
+        with st.expander(f"Live-Protokoll ({len(events)} Ereignisse)"):
+            for event in events:
+                _render_event(event)
+        return
+    st.markdown(f"#### ⏳ Die Agenten arbeiten an {job.symbol} · {job.analysis_date}")
     progress = st.progress(0.0)
     status_line = st.empty()
     feed = st.container()
@@ -346,11 +368,65 @@ def _render_job(job: AnalysisJob) -> None:
         status_line.empty()
         st.error(f"Analyse fehlgeschlagen: {job.error}")
         return
-    report_id, decision, report_markdown = job.result
-    status_line.caption(f"✅ Fertig nach {int(job.elapsed())} s · Bericht #{report_id} gespeichert")
-    _decision_box("Handelsentscheidung", decision)
-    with st.expander("📄 Vollständiger Bericht", expanded=False):
+    status_line.success(
+        f"✅ Analyse von {job.symbol} fertig nach {int(job.elapsed())} s – "
+        "die Stimmen der Agenten stehen unten."
+    )
+
+
+def _voice_card(voice, full_text: bool = True) -> None:
+    with _box():
+        st.markdown(
+            f'<div class="voice-head">{voice.icon} <b>{voice.name}</b>'
+            f'<span class="voice-role">{voice.role}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(escape_markdown(voice.excerpt))
+        if full_text:
+            with st.expander("Ganzer Text"):
+                st.markdown(escape_markdown(voice.text))
+
+
+def _render_voices(report_markdown: str, decision: str, analysis_date: str,
+                   full_text: bool = True) -> None:
+    """What each agent said, in the order the framework works through it."""
+    voices = parse_voices(report_markdown)
+    if not voices:
         st.markdown(report_markdown)
+        return
+    by_team: dict[str, list] = {}
+    for voice in voices:
+        by_team.setdefault(voice.team, []).append(voice)
+    manager = next(iter(by_team.get("decision", [])), None)
+
+    tone = _decision_tone(decision)
+    st.markdown(
+        f'<div class="verdict verdict-{tone}"><div class="verdict-label">'
+        f"Endentscheidung · Analyse vom {analysis_date}</div>"
+        f'<div class="verdict-value">{_DECISION_ICON[tone]} {html.escape(decision)}</div>'
+        + (f'<div class="verdict-text">{html.escape(manager.excerpt).replace("$", "&#36;")}</div>'
+           if manager else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    def section(title: str, team: str, columns: int) -> None:
+        members = by_team.get(team, [])
+        if not members:
+            return
+        st.markdown(f"##### {title}")
+        cols = st.columns(min(columns, len(members)))
+        for index, voice in enumerate(members):
+            with cols[index % len(cols)]:
+                _voice_card(voice, full_text)
+
+    section("① Die Analysten sammeln Fakten", "analysts", 2)
+    section("② Bull gegen Bear – die Research-Debatte", "debate", 3)
+    section("③ Der Trader macht einen Plan", "trader", 1)
+    section("④ Das Risiko-Team prüft den Plan", "risk", 3)
+    if manager and full_text:
+        st.markdown("##### ⑤ Der Portfolio-Manager entscheidet")
+        _voice_card(manager, full_text)
 
 
 llm_settings = load_llm_settings(_LLM_SETTINGS_PATH)
@@ -462,8 +538,8 @@ else:
     price_history, latest_prices, price_errors = None, {}, {}
 latest_reports = store.latest_reports()
 
-portfolio_tab, duel_tab, news_tab, analysis_tab, reports_tab = st.tabs(
-    ["📊 Portfolio", "⚔️ Ich vs. KI", "📰 Nachrichten", "🔎 Analyse", "🗂️ Berichte"]
+duel_tab, agents_tab, portfolio_tab = st.tabs(
+    ["⚔️ Ich vs. KI", "🤖 Was sagen die Agenten?", "📊 Mein Portfolio"]
 )
 
 with portfolio_tab:
@@ -580,7 +656,7 @@ with portfolio_tab:
                         _stat("KI-Empfehlung", recommendation)
                 with action_col:
                     if st.button(
-                        "🔎 Jetzt analysieren",
+                        "▶️ Neu analysieren",
                         key=f"analyze_{symbol}",
                         disabled=not llm_ready,
                         type="primary",
@@ -598,139 +674,135 @@ with portfolio_tab:
                         _price_history.clear()
                         st.rerun()
 
-with news_tab:
-    st.subheader("Nachrichten zu deinen Aktien")
+with agents_tab:
+    st.subheader("🤖 Was sagen die Agenten?")
     st.caption(
-        "Aktuelle Meldungen von Yahoo Finance. Die KI schätzt je Meldung, ob der Kurs eher "
-        "steigt oder fällt; daneben steht, wie sich die Aktie seit der Meldung tatsächlich "
-        "entwickelt hat. Bewertungen werden gespeichert und nicht erneut berechnet."
-    )
-    if not held_symbols:
-        st.info("Füge im Portfolio Positionen hinzu, um hier Nachrichten zu sehen.")
-    else:
-        if not llm_ready:
-            st.warning("Ohne API-Key/Modell werden die Meldungen ohne KI-Einschätzung angezeigt.")
-        if st.button("🔄 Nachrichten aktualisieren", key="refresh_news"):
-            _news.clear()
-        for symbol in held_symbols:
-            prices = (
-                price_history[symbol]
-                if price_history is not None and symbol in getattr(price_history, "columns", [])
-                else None
-            )
-            with st.spinner(f"Lade Nachrichten für {symbol} …"):
-                try:
-                    articles, rating_error = _news(
-                        symbol, llm_provider, quick_model, llm_ready, prices, ui_config
-                    )
-                except Exception as exc:
-                    st.warning(f"{symbol}: Nachrichten konnten nicht geladen werden ({exc})")
-                    continue
-            ups = sum(1 for a in articles if (a["rating"] or {}).get("direction") == "up")
-            downs = sum(1 for a in articles if (a["rating"] or {}).get("direction") == "down")
-            with _box():
-                st.markdown(
-                    f'<span class="sym">{symbol}</span>'
-                    f'<span class="badge badge-up">↑ {ups}</span>'
-                    f'<span class="badge badge-down">↓ {downs}</span>',
-                    unsafe_allow_html=True,
-                )
-                if rating_error:
-                    st.caption(f"KI-Bewertung fehlgeschlagen: {rating_error}")
-                if not articles:
-                    st.caption("Keine aktuellen Meldungen gefunden.")
-                    continue
-                rows = []
-                for article in articles:
-                    rating = article["rating"] or {}
-                    rows.append({
-                        "Datum": article["pub_date"].strftime("%d.%m.%Y %H:%M")
-                        if article["pub_date"] else "—",
-                        "Meldung": article["title"],
-                        "Link": article["link"] or None,
-                        "Quelle": article["publisher"],
-                        "KI-Einschätzung": _DIRECTION_LABEL.get(rating.get("direction"), "—"),
-                        "Sicherheit": rating.get("confidence"),
-                        "Begründung": rating.get("reason", ""),
-                        "Kurs seit Meldung": (
-                            article["reaction"] * 100 if article["reaction"] is not None else None
-                        ),
-                    })
-                st.dataframe(
-                    rows,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "Link": st.column_config.LinkColumn("Link", display_text="öffnen"),
-                        "Sicherheit": st.column_config.ProgressColumn(
-                            "Sicherheit", min_value=0, max_value=100, format="%d%%"
-                        ),
-                        "Kurs seit Meldung": st.column_config.NumberColumn(
-                            "Kurs seit Meldung", format="%+.2f%%"
-                        ),
-                    },
-                )
-
-with analysis_tab:
-    st.subheader("KI-Analyse")
-    st.caption(
-        "Multi-Agenten-Analyse mit Analysten, Research-Debatte, Trader und Risikomanagement. "
-        "Was die Agenten denken, erscheint live, während sie arbeiten. Der Bericht wird "
-        "automatisch gespeichert, auch wenn du die Seite verlässt."
+        "Pro Aktie arbeitet ein ganzes Team: Analysten sammeln Kurs-, Stimmungs-, Nachrichten- und "
+        "Bilanzdaten → Bull und Bear streiten → der Trader macht einen Plan → das Risiko-Team "
+        "prüft ihn → der Portfolio-Manager entscheidet. Für deine Portfolio-Aktien passiert das "
+        "jeden Tag automatisch."
     )
 
-    default_symbol = st.session_state.get("analysis_ticker", held_symbols[0] if held_symbols else "NVDA")
-    if held_symbols:
-        ticker = st.selectbox(
-            "Portfolio-Aktie", held_symbols,
-            index=held_symbols.index(default_symbol) if default_symbol in held_symbols else 0,
-        )
-    else:
-        ticker = st.text_input("Ticker-Symbol", value=default_symbol, help="z. B. NVDA, AAPL, TSLA")
-    analysis_date = st.date_input(
-        "Analyse-Datum",
-        value=date.today() - timedelta(days=1),
-        max_value=date.today() - timedelta(days=1),
-        key="analysis_date",
+    known_symbols = sorted(set(held_symbols) | set(latest_reports))
+    other_label = "➕ Andere Aktie …"
+    wanted = st.session_state.get("analysis_ticker")
+    options = [*known_symbols, other_label]
+    choice = st.selectbox(
+        "Aktie",
+        options,
+        index=options.index(wanted) if wanted in options else 0,
+        format_func=lambda s: s if s == other_label else (
+            f"{_DECISION_ICON[_decision_tone(latest_reports[s]['decision'])]} {s}"
+            if s in latest_reports else f"⚪ {s}"
+        ),
+        key="agents_symbol",
     )
+    if choice == other_label:
+        ticker = st.text_input("Ticker", value="NVDA", help="z. B. NVDA, AAPL, SAP.DE").strip().upper()
+    else:
+        ticker = choice
 
     job: AnalysisJob | None = st.session_state.get("analysis_job")
     job_running = job is not None and job.running
-    requested_analysis = st.button(
-        "Analyse starten",
-        type="primary",
-        disabled=not ticker.strip() or not llm_ready or job_running,
-        key="start_analysis",
-    )
+    symbol_reports = [r for r in store.list_reports(limit=500) if r["symbol"] == ticker]
+
+    with st.expander("▶️ Neue Analyse starten", expanded=not symbol_reports):
+        date_col, button_col = st.columns([2, 1])
+        with date_col:
+            analysis_date = st.date_input(
+                "Stichtag",
+                value=date.today() - timedelta(days=1),
+                max_value=date.today() - timedelta(days=1),
+                key="analysis_date",
+            )
+        with button_col:
+            st.write("")
+            requested_analysis = st.button(
+                f"{ticker or '…'} jetzt analysieren",
+                type="primary",
+                disabled=not ticker or not llm_ready or job_running,
+                key="start_analysis",
+                use_container_width=True,
+            )
+        st.caption("Dauert einige Minuten. Was die Agenten denken, erscheint live darunter.")
     run_portfolio_analysis = st.session_state.pop("run_portfolio_analysis", False)
-    if (requested_analysis or run_portfolio_analysis) and not job_running:
-        job_symbol = (
-            st.session_state.get("analysis_ticker", ticker) if run_portfolio_analysis else ticker
-        )
-        job = AnalysisJob(store, job_symbol.strip().upper(), str(analysis_date), ui_config)
+    if (requested_analysis or run_portfolio_analysis) and ticker and not job_running:
+        job = AnalysisJob(store, ticker, str(analysis_date), ui_config)
         st.session_state["analysis_job"] = job
     # Filled at the end of the script, so streaming never blocks the other tabs.
     job_area = st.container()
 
-with reports_tab:
-    st.subheader("Analyseberichte")
+    if symbol_reports:
+        selected = symbol_reports[0]
+        if len(symbol_reports) > 1:
+            selected = st.selectbox(
+                "Frühere Analysen",
+                symbol_reports,
+                format_func=lambda r: (
+                    f"{_DECISION_ICON[_decision_tone(r['decision'])]} {r['analysis_date']} · "
+                    f"{r['decision']} · erstellt {r['created_at'][:16].replace('T', ' ')}"
+                ),
+                key=f"report_pick_{ticker}",
+            )
+        report = store.get_report(selected["id"])
+        if report:
+            _render_voices(report["report_markdown"], report["decision"], report["analysis_date"])
+            st.download_button(
+                "⬇️ Kompletten Bericht herunterladen",
+                report["report_markdown"],
+                file_name=f"{report['symbol']}_{report['analysis_date']}_bericht.md",
+                mime="text/markdown",
+            )
+    elif ticker:
+        st.info(f"Für {ticker} gibt es noch keine Analyse. Starte oben eine.")
 
-    if latest_reports:
-        st.markdown("**Letzte Empfehlung je Aktie**")
-        st.dataframe(
-            [
-                {
-                    "Aktie": report["symbol"],
-                    "Signal": _DECISION_ICON[_decision_tone(report["decision"])],
-                    "Entscheidung": report["decision"],
-                    "Analyse-Datum": report["analysis_date"],
-                    "Erstellt": report["created_at"][:16].replace("T", " "),
-                }
-                for report in sorted(latest_reports.values(), key=lambda r: r["symbol"])
-            ],
-            hide_index=True,
-            use_container_width=True,
+    if ticker:
+        st.markdown("#### 📰 Nachrichten, die die Agenten lesen")
+        st.caption(
+            "Dieselbe Suche, die der News-Analyst nutzt (letzte 7 Tage). Die KI schätzt je Meldung "
+            "die Kursrichtung; daneben steht, wie sich die Aktie seitdem tatsächlich bewegt hat."
         )
+        prices = (
+            price_history[ticker]
+            if price_history is not None and ticker in getattr(price_history, "columns", [])
+            else None
+        )
+        try:
+            with st.spinner(f"Lade Nachrichten für {ticker} …"):
+                articles, rating_error = _news(
+                    ticker, llm_provider, quick_model, llm_ready, prices, ui_config
+                )
+        except Exception as exc:
+            articles, rating_error = [], None
+            st.warning(f"Nachrichten konnten nicht geladen werden ({exc})")
+        if rating_error:
+            reason = "API-Key ungültig" if "401" in rating_error else (
+                "Limit erreicht – später erneut" if "429" in rating_error else "Fehler beim LLM"
+            )
+            st.caption(f"⚠️ KI-Einschätzung gerade nicht verfügbar ({reason}).")
+        if articles:
+            st.dataframe(
+                [
+                    {
+                        "Datum": a["pub_date"].strftime("%d.%m. %H:%M") if a["pub_date"] else "—",
+                        "Meldung": a["title"],
+                        "Quelle": a["publisher"],
+                        "KI": _DIRECTION_LABEL.get((a["rating"] or {}).get("direction"), "—"),
+                        "Begründung": (a["rating"] or {}).get("reason", ""),
+                        "Kurs seitdem": a["reaction"] * 100 if a["reaction"] is not None else None,
+                        "Link": a["link"] or None,
+                    }
+                    for a in articles
+                ],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Link": st.column_config.LinkColumn("Link", display_text="öffnen"),
+                    "Kurs seitdem": st.column_config.NumberColumn("Kurs seitdem", format="%+.2f%%"),
+                },
+            )
+        elif not rating_error:
+            st.caption("Keine Meldungen der letzten 7 Tage gefunden.")
 
     daily_runs = store.list_daily_runs(limit=30)
     with st.expander(f"🕖 Automatische Tagesläufe ({len(daily_runs)})", expanded=False):
@@ -747,7 +819,6 @@ with reports_tab:
                         "Analyse-Datum": run["analysis_date"],
                         "Status": status_label.get(run["status"], run["status"]),
                         "Versuche": run["attempts"],
-                        "Bericht": f"#{run['report_id']}" if run["report_id"] else "",
                         "Fehler": run["error"] or "",
                         "Aktualisiert": run["updated_at"][:16].replace("T", " "),
                     }
@@ -757,51 +828,12 @@ with reports_tab:
                 use_container_width=True,
             )
 
-    reports = store.list_reports()
-    if not reports:
-        st.info("Nach der ersten Analyse erscheinen die Berichte hier dauerhaft.")
-    else:
-        report_symbols = sorted({report["symbol"] for report in reports})
-        symbol_filter = st.selectbox("Aktie", ["Alle", *report_symbols], key="report_symbol_filter")
-        filtered = [r for r in reports if symbol_filter == "Alle" or r["symbol"] == symbol_filter]
-        selected_report = st.selectbox(
-            "Bericht auswählen",
-            filtered,
-            format_func=lambda report: (
-                f"{_DECISION_ICON[_decision_tone(report['decision'])]} #{report['id']} · "
-                f"{report['symbol']} · {report['analysis_date']} "
-                f"· {report['created_at'][:16].replace('T', ' ')}"
-            ),
-        )
-        full_report = store.get_report(selected_report["id"])
-        if full_report is None:
-            st.error("Der ausgewählte Bericht ist nicht mehr verfügbar.")
-        else:
-            _decision_box("Entscheidung", full_report["decision"])
-
-            download_col, _ = st.columns([1, 3])
-            with download_col:
-                st.download_button(
-                    "⬇️ Markdown herunterladen",
-                    full_report["report_markdown"],
-                    file_name=(
-                        f"{full_report['symbol']}_{full_report['analysis_date']}"
-                        "_bericht.md"
-                    ),
-                    mime="text/markdown",
-                    use_container_width=True,
-                )
-            with _box():
-                st.markdown(full_report["report_markdown"])
-
 with duel_tab:
     duel = _duel_store()
     st.subheader("⚔️ Ich vs. KI")
     st.caption(
-        "Beide starten mit demselben Spielgeld und handeln virtuell zu echten Kursen (in €). "
-        "Du handelst frei; die KI spielt jeden Tag automatisch einen Zug: Sie sucht sich "
-        "Kandidaten über Yahoo-Screener, lässt die komplette Multi-Agenten-Analyse laufen und "
-        "handelt nach dem Rating des Portfolio-Managers. Jeder KI-Trade ist begründet."
+        "Gleiches Spielgeld, echte Kurse. Du handelst selbst – die KI handelt jeden Tag nach "
+        "dem, was ihr Agenten-Team beschließt."
     )
 
     def _quote(symbol: str) -> float:
@@ -827,11 +859,25 @@ with duel_tab:
 
     history = duel.equity_history()
     if history:
-        frame = pd.DataFrame(history).pivot(index="day", columns="player", values="value")
-        frame = frame.rename(columns=PLAYERS)
-        frame.index = pd.to_datetime(frame.index)
-        st.markdown("**Depotwert im Verlauf**")
-        st.line_chart(frame)
+        import altair as alt
+
+        frame = pd.DataFrame(history)
+        frame["Spieler"] = frame["player"].map(PLAYERS)
+        frame["Tag"] = pd.to_datetime(frame["day"])
+        chart = (
+            alt.Chart(frame)
+            .mark_line(point=True, strokeWidth=3)
+            .encode(
+                x=alt.X("Tag:T", title=None, axis=alt.Axis(format="%d.%m.", tickCount="day")),
+                y=alt.Y("value:Q", title="Depotwert €", scale=alt.Scale(zero=False)),
+                color=alt.Color("Spieler:N", title=None,
+                                scale=alt.Scale(domain=["Ich", "KI"], range=["#2563eb", "#f97316"])),
+                tooltip=["Spieler", alt.Tooltip("Tag:T", format="%d.%m.%Y"),
+                         alt.Tooltip("value:Q", title="Wert €", format=",.2f")],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(chart, use_container_width=True)
 
     def _position_rows(valuation: dict) -> list[dict]:
         return [
@@ -845,54 +891,6 @@ with duel_tab:
             }
             for p in valuation["positions"]
         ]
-
-    me_col, ai_col = st.columns(2)
-    with me_col, _box():
-        st.markdown("**🧑 Mein Depot**")
-        st.caption(f"Spielgeld: {me_val['cash']:,.2f} €")
-        with st.form("duel_trade_form", clear_on_submit=True):
-            trade_symbol = st.text_input("Ticker", placeholder="z. B. NVDA, SAP.DE")
-            side_col, amount_col = st.columns(2)
-            with side_col:
-                trade_side = st.radio("Aktion", ["Kaufen", "Verkaufen"], horizontal=True)
-            with amount_col:
-                trade_amount = st.number_input(
-                    "Betrag in €", min_value=0.0, value=1000.0, step=100.0
-                )
-            sell_all = st.checkbox("Ganze Position verkaufen")
-            submitted = st.form_submit_button("Order ausführen", type="primary")
-        if submitted:
-            try:
-                symbol = trade_symbol.strip().upper()
-                price = _eur_price(symbol)
-                if trade_side == "Kaufen":
-                    shares = trade_amount / price
-                    duel.trade("me", symbol, "buy", shares, price)
-                else:
-                    held = next(
-                        (p["shares"] for p in me_val["positions"] if p["symbol"] == symbol), 0.0
-                    )
-                    shares = held if sell_all else min(held, trade_amount / price)
-                    duel.trade("me", symbol, "sell", shares, price)
-                duel.record_equity(_quote)
-                st.success(
-                    f"{trade_side}: {shares:,.4f} × {symbol} zu {price:,.2f} € "
-                    f"= {shares * price:,.2f} €"
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Order abgelehnt: {exc}")
-        if me_val["positions"]:
-            st.dataframe(_position_rows(me_val), hide_index=True, use_container_width=True)
-        else:
-            st.caption("Noch keine Positionen.")
-    with ai_col, _box():
-        st.markdown("**🤖 Depot der KI**")
-        st.caption(f"Spielgeld: {ai_val['cash']:,.2f} €")
-        if ai_val["positions"]:
-            st.dataframe(_position_rows(ai_val), hide_index=True, use_container_width=True)
-        else:
-            st.caption("Die KI hat noch nicht gehandelt.")
 
     st.markdown("#### 🤖 Züge der KI")
     turn_date = previous_trading_day(date.today())
@@ -979,15 +977,66 @@ with duel_tab:
                 )
                 report_id = analysis.get("report_id")
                 if report_id and st.checkbox(
-                    f"Warum? Vollständige Analyse zu {symbol} zeigen",
+                    f"Warum? Was die Agenten zu {symbol} gesagt haben",
                     key=f"duel_report_{turn['turn_date']}_{symbol}",
                 ):
                     report = store.get_report(report_id)
                     if report:
-                        with _box():
-                            st.markdown(report["report_markdown"])
+                        # Inside an expander: excerpts only (no nested expanders).
+                        _render_voices(report["report_markdown"], report["decision"],
+                                       report["analysis_date"], full_text=False)
+                        st.caption("Volltext jeder Stimme im Tab „🤖 Was sagen die Agenten?“.")
             if turn["status"] == "running":
                 st.caption("⏳ Zug läuft — Seite neu laden, um den Fortschritt zu sehen.")
+
+    st.markdown("#### 💼 Die Depots")
+    me_col, ai_col = st.columns(2)
+    with me_col, _box():
+        st.markdown("**🧑 Mein Depot**")
+        st.caption(f"Spielgeld: {me_val['cash']:,.2f} €")
+        with st.form("duel_trade_form", clear_on_submit=True):
+            trade_symbol = st.text_input("Ticker", placeholder="z. B. NVDA, SAP.DE")
+            side_col, amount_col = st.columns(2)
+            with side_col:
+                trade_side = st.radio("Aktion", ["Kaufen", "Verkaufen"], horizontal=True)
+            with amount_col:
+                trade_amount = st.number_input(
+                    "Betrag in €", min_value=0.0, value=1000.0, step=100.0
+                )
+            sell_all = st.checkbox("Ganze Position verkaufen")
+            submitted = st.form_submit_button("Order ausführen", type="primary")
+        if submitted:
+            try:
+                symbol = trade_symbol.strip().upper()
+                price = _eur_price(symbol)
+                if trade_side == "Kaufen":
+                    shares = trade_amount / price
+                    duel.trade("me", symbol, "buy", shares, price)
+                else:
+                    held = next(
+                        (p["shares"] for p in me_val["positions"] if p["symbol"] == symbol), 0.0
+                    )
+                    shares = held if sell_all else min(held, trade_amount / price)
+                    duel.trade("me", symbol, "sell", shares, price)
+                duel.record_equity(_quote)
+                st.success(
+                    f"{trade_side}: {shares:,.4f} × {symbol} zu {price:,.2f} € "
+                    f"= {shares * price:,.2f} €"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Order abgelehnt: {exc}")
+        if me_val["positions"]:
+            st.dataframe(_position_rows(me_val), hide_index=True, use_container_width=True)
+        else:
+            st.caption("Noch keine Positionen.")
+    with ai_col, _box():
+        st.markdown("**🤖 Depot der KI**")
+        st.caption(f"Spielgeld: {ai_val['cash']:,.2f} €")
+        if ai_val["positions"]:
+            st.dataframe(_position_rows(ai_val), hide_index=True, use_container_width=True)
+        else:
+            st.caption("Die KI hat noch nicht gehandelt.")
 
     st.markdown("#### 📜 Alle Trades")
     all_trades = duel.trades(limit=200)
@@ -1023,8 +1072,8 @@ with duel_tab:
 
 if job is not None and job.running:
     running_notice.info(
-        f"⏳ Analyse von **{job.symbol}** läuft — die Agenten-Gedanken erscheinen live "
-        "im Tab „🔎 Analyse“."
+        f"⏳ Die Agenten analysieren **{job.symbol}** – live mitlesen im Tab "
+        "„🤖 Was sagen die Agenten?“."
     )
 
 st.divider()
@@ -1038,3 +1087,7 @@ if job is not None:
     with job_area:
         _render_job(job)
     running_notice.empty()
+    if not job.error and not getattr(job, "result_shown", False):
+        # Rerun once so the report view below shows the new analysis.
+        job.result_shown = True
+        st.rerun()
