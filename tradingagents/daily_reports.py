@@ -106,17 +106,16 @@ def run_due_reports(
     analyze: Callable[..., tuple[int, str, str]] = run_and_store_analysis,
     stop: threading.Event | None = None,
 ) -> list[str]:
-    """Analyse every holding that has no report for ``analysis_date`` yet.
+    """Analyse every favorite and holding that has no report for ``analysis_date`` yet.
 
-    Holdings are processed one after another to stay within free-tier rate
+    Symbols are processed one after another to stay within free-tier rate
     limits. Returns the symbols that got a new report.
     """
     day = analysis_date.isoformat()
     done = []
-    for holding in store.list_holdings():
+    for symbol in store.tracked_symbols():
         if stop is not None and stop.is_set():
             break
-        symbol = holding["symbol"]
         if store.has_report(symbol, day):
             continue
         config = config_factory()
@@ -136,6 +135,27 @@ def run_due_reports(
             store.finish_daily_run(symbol, day, report_id=report_id)
             done.append(symbol)
     return done
+
+
+def discovery_job(store: PortfolioStore, config_factory: Callable[[], dict]):
+    """Scheduler job: today's "Entdecken" list, at most once per day."""
+    from tradingagents.discovery import discover
+
+    def job(_due: date, _stop: threading.Event) -> None:
+        day = datetime.now(schedule_zone()).date().isoformat()
+        if not store.claim_discovery(day):
+            return
+        config = config_factory()
+        usable = None if missing_api_key(config["llm_provider"]) else config
+        try:
+            result = discover(store.tracked_symbols(), usable)
+        except Exception as exc:
+            logger.exception("Discovery failed")
+            store.save_discoveries(day, None, error=str(exc)[:500])
+        else:
+            store.save_discoveries(day, result)
+
+    return job
 
 
 class DailyReportScheduler:

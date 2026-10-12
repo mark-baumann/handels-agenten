@@ -84,3 +84,31 @@ def test_load_portfolio_price_history_reports_missing_prices(monkeypatch):
     assert history.empty
     assert latest == {}
     assert "UNKNOWN" in errors
+
+
+@pytest.mark.unit
+def test_favorites_and_tracked_symbols(tmp_path):
+    store = PortfolioStore(tmp_path / "p.sqlite3")
+    store.add_holding("AAPL", 1)
+    assert store.add_favorite(" nvda ") == "NVDA"
+    store.add_favorite("NVDA")  # idempotent
+    store.add_favorite("aapl")
+    assert store.list_favorites() == ["AAPL", "NVDA"]
+    assert store.tracked_symbols() == ["AAPL", "NVDA"]
+    assert store.remove_favorite("NVDA")
+    assert store.tracked_symbols() == ["AAPL"]
+    with pytest.raises(ValueError):
+        store.add_favorite("../etc")
+
+
+@pytest.mark.unit
+def test_discoveries_claim_save_and_latest(tmp_path):
+    store = PortfolioStore(tmp_path / "p.sqlite3")
+    assert store.latest_discoveries() is None
+    assert store.claim_discovery("2026-10-12")
+    assert not store.claim_discovery("2026-10-12")  # already running
+    store.save_discoveries("2026-10-12", {"picks": [{"symbol": "T"}], "error": None})
+    assert not store.claim_discovery("2026-10-12")  # done for the day
+    store.save_discoveries("2026-10-13", None, error="boom")
+    latest = store.latest_discoveries()
+    assert latest["day"] == "2026-10-12" and latest["picks"] == [{"symbol": "T"}]
