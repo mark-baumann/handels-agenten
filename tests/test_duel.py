@@ -196,3 +196,35 @@ def test_eur_quotes_convert_currency_and_pence(monkeypatch):
     assert quotes("SAP.DE") == 200.0
     assert quotes("AAPL") == pytest.approx(90.0)
     assert quotes("VOD.L") == pytest.approx(0.96)
+
+
+class _FakeTicker:
+    def __init__(self, fast=None, closes=(), currency="USD"):
+        self._fast, self._closes = fast, closes
+        self.history_metadata = {"currency": currency}
+
+    @property
+    def fast_info(self):
+        if self._fast is None:
+            raise KeyError("currentTradingPeriod")
+        return self._fast
+
+    def history(self, period, auto_adjust):
+        import pandas as pd
+
+        return pd.DataFrame({"Close": list(self._closes)})
+
+
+def test_last_falls_back_to_history_when_fast_info_breaks(monkeypatch):
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "Ticker", lambda s: _FakeTicker(closes=[10.0, 12.5], currency="EUR"))
+    assert duel_mod.EurQuotes._last("RHM.DE") == (12.5, "EUR")
+
+
+def test_unknown_symbol_gives_readable_error(monkeypatch):
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "Ticker", lambda s: _FakeTicker())
+    with pytest.raises(duel_mod.QuoteError, match="nicht gefunden.*Börsenkürzel"):
+        duel_mod.EurQuotes()("apple")

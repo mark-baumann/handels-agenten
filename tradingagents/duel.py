@@ -93,6 +93,13 @@ class QuoteError(RuntimeError):
     pass
 
 
+def _valid_price(price) -> bool:
+    try:
+        return price is not None and math.isfinite(float(price)) and float(price) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class EurQuotes:
     """Latest price per symbol converted to EUR, cached for one instance."""
 
@@ -104,12 +111,28 @@ class EurQuotes:
     def _last(symbol: str) -> tuple[float, str]:
         import yfinance as yf
 
-        info = yf.Ticker(symbol).fast_info
-        price = info["lastPrice"]
-        currency = info["currency"] or "USD"
-        if price is None or not math.isfinite(float(price)) or float(price) <= 0:
-            raise QuoteError(f"Kein Kurs für {symbol}")
-        return float(price), str(currency)
+        ticker = yf.Ticker(symbol)
+        price = currency = None
+        try:
+            info = ticker.fast_info
+            price, currency = info["lastPrice"], info["currency"]
+        except Exception as exc:  # unknown symbols raise e.g. KeyError('currentTradingPeriod')
+            logger.debug("fast_info failed for %s: %s", symbol, exc)
+        if not _valid_price(price):
+            try:
+                history = ticker.history(period="5d", auto_adjust=False)
+                closes = history["Close"].dropna() if "Close" in history else []
+                if len(closes):
+                    price = float(closes.iloc[-1])
+                    currency = currency or (ticker.history_metadata or {}).get("currency")
+            except Exception as exc:
+                logger.debug("history failed for %s: %s", symbol, exc)
+        if not _valid_price(price):
+            raise QuoteError(
+                f"Kürzel „{symbol}“ bei Yahoo Finance nicht gefunden – bitte das "
+                "Börsenkürzel verwenden (z. B. AAPL, NVDA, SAP.DE), nicht den Firmennamen."
+            )
+        return float(price), str(currency or "USD")
 
     def _rate(self, currency: str) -> float:
         if currency not in self._fx:

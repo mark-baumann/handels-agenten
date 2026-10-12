@@ -995,7 +995,9 @@ with duel_tab:
         st.markdown("**🧑 Mein Depot**")
         st.caption(f"Spielgeld: {me_val['cash']:,.2f} €")
         with st.form("duel_trade_form", clear_on_submit=True):
-            trade_symbol = st.text_input("Ticker", placeholder="z. B. NVDA, SAP.DE")
+            trade_symbol = st.text_input(
+                "Börsenkürzel", placeholder="z. B. NVDA, AAPL, SAP.DE (nicht den Firmennamen)"
+            )
             side_col, amount_col = st.columns(2)
             with side_col:
                 trade_side = st.radio("Aktion", ["Kaufen", "Verkaufen"], horizontal=True)
@@ -1025,7 +1027,7 @@ with duel_tab:
                 )
                 st.rerun()
             except Exception as exc:
-                st.error(f"Order abgelehnt: {exc}")
+                st.error(f"Order abgelehnt: {exc}" if isinstance(exc, ValueError) else str(exc))
         if me_val["positions"]:
             st.dataframe(_position_rows(me_val), hide_index=True, use_container_width=True)
         else:
