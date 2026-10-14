@@ -99,16 +99,3 @@ def test_favorites_and_tracked_symbols(tmp_path):
     assert store.tracked_symbols() == ["AAPL"]
     with pytest.raises(ValueError):
         store.add_favorite("../etc")
-
-
-@pytest.mark.unit
-def test_discoveries_claim_save_and_latest(tmp_path):
-    store = PortfolioStore(tmp_path / "p.sqlite3")
-    assert store.latest_discoveries() is None
-    assert store.claim_discovery("2026-10-12")
-    assert not store.claim_discovery("2026-10-12")  # already running
-    store.save_discoveries("2026-10-12", {"picks": [{"symbol": "T"}], "error": None})
-    assert not store.claim_discovery("2026-10-12")  # done for the day
-    store.save_discoveries("2026-10-13", None, error="boom")
-    latest = store.latest_discoveries()
-    assert latest["day"] == "2026-10-12" and latest["picks"] == [{"symbol": "T"}]

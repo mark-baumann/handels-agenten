@@ -126,8 +126,7 @@ The dashboard uses Ollama Cloud with `gpt-oss:120b` by default (free plan,
 set `OLLAMA_API_KEY`) and creates a report for every portfolio holding once a
 day (`TRADINGAGENTS_DAILY_REPORT_TIME`, default 07:00 Europe/Berlin).
 Mark stocks as favorites ("⭐ Meine Aktien") to get the full multi-agent analysis
-every day; "🔭 Entdecken" lists further stocks the agents found on Yahoo
-screeners, each with a short reason why it is worth a look.
+every day.
 
 ### Required APIs
 

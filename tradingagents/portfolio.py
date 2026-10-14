@@ -69,18 +69,6 @@ class PortfolioStore:
             )
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS discoveries (
-                    day TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    payload TEXT,
-                    error TEXT,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
                 CREATE TABLE IF NOT EXISTS news_impact (
                     symbol TEXT NOT NULL,
                     article_key TEXT NOT NULL,
@@ -242,76 +230,6 @@ class PortfolioStore:
         """Favorites and holdings: everything that gets a daily report."""
         holdings = [h["symbol"] for h in self.list_holdings()]
         return sorted(set(holdings) | set(self.list_favorites()))
-
-    # --- Discoveries ------------------------------------------------------
-
-    def claim_discovery(
-        self,
-        day: str,
-        max_attempts: int = 3,
-        retry_after: timedelta = timedelta(minutes=30),
-        stale_after: timedelta = timedelta(hours=1),
-    ) -> bool:
-        """Atomically mark the discovery for ``day`` as started; False if not due."""
-        now = datetime.now(timezone.utc)
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT status, attempts, updated_at FROM discoveries WHERE day = ?", (day,)
-            ).fetchone()
-            if row is not None:
-                age = now - datetime.fromisoformat(row["updated_at"])
-                claimable = (
-                    (row["status"] == "error" and row["attempts"] < max_attempts and age >= retry_after)
-                    or (row["status"] == "running" and age >= stale_after)
-                )
-                if not claimable:
-                    connection.rollback()
-                    return False
-            connection.execute(
-                """
-                INSERT INTO discoveries (day, status, attempts, updated_at)
-                VALUES (?, 'running', 1, ?)
-                ON CONFLICT(day) DO UPDATE SET status = 'running',
-                    attempts = attempts + 1, error = NULL, updated_at = excluded.updated_at
-                """,
-                (day, now.isoformat()),
-            )
-            connection.commit()
-            return True
-        finally:
-            connection.close()
-
-    def save_discoveries(self, day: str, payload: dict | None, error: str | None = None) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO discoveries (day, status, attempts, payload, error, updated_at)
-                VALUES (?, ?, 1, ?, ?, ?)
-                ON CONFLICT(day) DO UPDATE SET status = excluded.status,
-                    payload = COALESCE(excluded.payload, discoveries.payload),
-                    error = excluded.error, updated_at = excluded.updated_at
-                """,
-                (
-                    day,
-                    "error" if payload is None else "done",
-                    json.dumps(payload) if payload is not None else None,
-                    error,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-
-    def latest_discoveries(self) -> dict | None:
-        """Newest finished discovery: ``{"day", "picks", "error", "updated_at"}``."""
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT day, payload, updated_at FROM discoveries "
-                "WHERE payload IS NOT NULL ORDER BY day DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            return None
-        return {"day": row["day"], "updated_at": row["updated_at"], **json.loads(row["payload"])}
 
     # --- Scheduled daily runs ---------------------------------------------
 
