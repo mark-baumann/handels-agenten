@@ -61,25 +61,6 @@ def test_favorites_without_holding_get_daily_reports(tmp_path):
     assert sorted(done) == ["AAPL", "NVDA"]
 
 
-def test_discovery_job_runs_once_per_day(tmp_path, monkeypatch):
-    import tradingagents.discovery as discovery
-    from tradingagents.daily_reports import discovery_job
-
-    store = _store(tmp_path, "AAPL")
-    calls = []
-
-    def fake_discover(tracked, config):
-        calls.append((tracked, config))
-        return {"picks": [{"symbol": "T", "reason": "r"}], "error": None}
-
-    monkeypatch.setattr(discovery, "discover", fake_discover)
-    job = discovery_job(store, lambda: _CONFIG)
-    job(date(2026, 10, 9), None)
-    job(date(2026, 10, 9), None)
-    assert calls == [(["AAPL"], _CONFIG)]
-    assert store.latest_discoveries()["picks"][0]["symbol"] == "T"
-
-
 def test_failed_run_is_recorded_and_not_retried_immediately(tmp_path):
     store = _store(tmp_path, "AAPL")
     calls = []

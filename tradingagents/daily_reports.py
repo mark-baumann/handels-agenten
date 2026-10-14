@@ -137,27 +137,6 @@ def run_due_reports(
     return done
 
 
-def discovery_job(store: PortfolioStore, config_factory: Callable[[], dict]):
-    """Scheduler job: today's "Entdecken" list, at most once per day."""
-    from tradingagents.discovery import discover
-
-    def job(_due: date, _stop: threading.Event) -> None:
-        day = datetime.now(schedule_zone()).date().isoformat()
-        if not store.claim_discovery(day):
-            return
-        config = config_factory()
-        usable = None if missing_api_key(config["llm_provider"]) else config
-        try:
-            result = discover(store.tracked_symbols(), usable)
-        except Exception as exc:
-            logger.exception("Discovery failed")
-            store.save_discoveries(day, None, error=str(exc)[:500])
-        else:
-            store.save_discoveries(day, result)
-
-    return job
-
-
 class DailyReportScheduler:
     """Background thread that keeps the daily reports up to date."""
 

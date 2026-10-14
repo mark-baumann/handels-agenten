@@ -15,14 +15,12 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 from tradingagents.agent_voices import escape_markdown, parse_voices  # noqa: E402
 from tradingagents.daily_reports import (  # noqa: E402
     DailyReportScheduler,
-    discovery_job,
     missing_api_key,
     reports_enabled,
     schedule_time,
     schedule_zone,
 )
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
-from tradingagents.discovery import SCREEN_LABELS, discover, discovery_enabled  # noqa: E402
 from tradingagents.live_progress import AnalysisJob, stage_progress  # noqa: E402
 from tradingagents.llm_clients.api_key_env import get_api_key_env  # noqa: E402
 from tradingagents.news_impact import news_with_impact  # noqa: E402
@@ -233,8 +231,6 @@ def _daily_scheduler() -> DailyReportScheduler | None:
     if not reports_enabled():
         return None
     jobs = []
-    if discovery_enabled():
-        jobs.append(discovery_job(_portfolio_store(), _saved_run_config))
     return DailyReportScheduler(_portfolio_store(), _saved_run_config, extra_jobs=jobs).start()
 
 
@@ -510,15 +506,12 @@ def _ask_agents(symbol: str, analyse: bool) -> None:
         st.session_state["run_portfolio_analysis"] = True
 
 
-home_tab, discover_tab, agents_tab = st.tabs(
-    ["⭐ Meine Aktien", "🔭 Entdecken", "🤖 Was sagen die Agenten?"]
-)
+home_tab, agents_tab = st.tabs(["⭐ Meine Aktien", "🤖 Was sagen die Agenten?"])
 
 with home_tab:
     st.subheader("⭐ Meine Aktien")
     st.caption(
-        "Für jede Aktie hier analysieren die Agenten jeden Tag automatisch neu. "
-        "Neue Ideen findest du unter „🔭 Entdecken“."
+        "Für jede Aktie hier analysieren die Agenten jeden Tag automatisch neu."
     )
     with st.form("add_favorite_form", clear_on_submit=True):
         input_col, button_col = st.columns([3, 1])
@@ -541,7 +534,7 @@ with home_tab:
             st.rerun()
 
     if not tracked:
-        st.info("Noch keine Favoriten. Füge oben ein Kürzel hinzu oder schau unter „🔭 Entdecken“.")
+        st.info("Noch keine Favoriten. Füge oben ein Börsenkürzel hinzu.")
     for row_start in range(0, len(tracked), 2):
         cols = st.columns(2)
         for col, symbol in zip(cols, tracked[row_start:row_start + 2], strict=False):
@@ -713,63 +706,6 @@ with home_tab:
                             _price_history.clear()
                             st.rerun()
 
-
-with discover_tab:
-    st.subheader("🔭 Entdecken")
-    st.caption(
-        "Jeden Tag sichten die Agenten die Yahoo-Ranglisten (meistgehandelt, Gewinner, Verlierer, "
-        "unterbewertet, Tech-Wachstum) und sagen, welche Aktien einen Blick wert sind. Mit ★ wird "
-        "eine Aktie Favorit – dann läuft die volle Analyse und ab jetzt jeden Tag."
-    )
-    discovered = store.latest_discoveries()
-    info_col, refresh_col = st.columns([3, 1])
-    with info_col:
-        if discovered:
-            st.caption(f"Stand: {discovered['day']}")
-    with refresh_col:
-        refresh = st.button("🔄 Neu suchen", use_container_width=True, key="refresh_discovery")
-    if refresh:
-        with st.spinner("Die Agenten sichten die Ranglisten …"):
-            result = discover(tracked, ui_config if llm_ready else None)
-        store.save_discoveries(date.today().isoformat(), result)
-        st.rerun()
-    if discovered and discovered.get("error"):
-        st.caption("⚠️ KI-Begründungen gerade nicht verfügbar – gezeigt werden die meistgehandelten Werte.")
-    if not discovered:
-        st.info("Noch keine Entdeckungen. Klick auf „🔄 Neu suchen“ oder warte auf den nächsten Tageslauf.")
-    for pick in (discovered or {}).get("picks", []):
-        symbol = pick["symbol"]
-        change = pick.get("change_pct")
-        with _box():
-            text_col, action_col = st.columns([4, 1])
-            with text_col:
-                badge = (
-                    f'<span class="badge badge-{"up" if change >= 0 else "down"}">{change:+.2f}%</span>'
-                    if isinstance(change, (int, float)) else ""
-                )
-                price = pick.get("price")
-                price_text = (
-                    f"{price:,.2f} {pick.get('currency') or ''}" if isinstance(price, (int, float)) else ""
-                )
-                screens = " · ".join(SCREEN_LABELS.get(x, x) for x in pick.get("screens", []))
-                st.markdown(
-                    f'<span class="sym">{html.escape(symbol)}</span>{badge}'
-                    f'<span class="voice-role">{html.escape(pick.get("name") or "")} · {price_text} · {screens}</span>',
-                    unsafe_allow_html=True,
-                )
-                if pick.get("reason"):
-                    st.markdown(escape_markdown(pick["reason"]))
-            with action_col:
-                if symbol in tracked:
-                    st.button("✓ Favorit", key=f"fav_{symbol}", disabled=True, use_container_width=True)
-                elif st.button("★ Favorit", key=f"fav_{symbol}", type="primary", use_container_width=True):
-                    try:
-                        store.add_favorite(symbol)
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    else:
-                        _ask_agents(symbol, analyse=True)
-                        st.rerun()
 
 with agents_tab:
     st.subheader("🤖 Was sagen die Agenten?")
