@@ -716,32 +716,31 @@ with agents_tab:
         "jeden Tag automatisch."
     )
 
-    known_symbols = sorted(set(tracked) | set(latest_reports))
-    other_label = "➕ Andere Aktie …"
+    # Only the saved stocks (favorites and holdings); new ones are added on the home tab.
+    options = sorted(tracked)
     wanted = st.session_state.get("analysis_ticker")
-    options = [*known_symbols, other_label]
     if st.session_state.get("agents_symbol") not in (None, *options):
         st.session_state.pop("agents_symbol")  # e.g. a favorite that was just removed
-    choice = st.selectbox(
-        "Aktie",
-        options,
-        index=options.index(wanted) if wanted in options else 0,
-        format_func=lambda s: s if s == other_label else (
-            f"{_DECISION_ICON[_decision_tone(latest_reports[s]['decision'])]} {s}"
-            if s in latest_reports else f"⚪ {s}"
-        ),
-        key="agents_symbol",
-    )
-    if choice == other_label:
-        ticker = st.text_input("Ticker", value="NVDA", help="z. B. NVDA, AAPL, SAP.DE").strip().upper()
+    if options:
+        ticker = st.selectbox(
+            "Aktie",
+            options,
+            index=options.index(wanted) if wanted in options else 0,
+            format_func=lambda s: (
+                f"{_DECISION_ICON[_decision_tone(latest_reports[s]['decision'])]} {s}"
+                if s in latest_reports else f"⚪ {s}"
+            ),
+            key="agents_symbol",
+        )
     else:
-        ticker = choice
+        ticker = None
+        st.info("Noch keine Aktien gespeichert – füge auf ⭐ Meine Aktien einen Favoriten hinzu.")
 
     job: AnalysisJob | None = st.session_state.get("analysis_job")
     job_running = job is not None and job.running
     symbol_reports = [r for r in store.list_reports(limit=500) if r["symbol"] == ticker]
 
-    with st.expander("▶️ Neue Analyse starten", expanded=not symbol_reports):
+    with st.expander("▶️ Neue Analyse starten", expanded=bool(ticker) and not symbol_reports):
         date_col, button_col = st.columns([2, 1])
         with date_col:
             analysis_date = st.date_input(
